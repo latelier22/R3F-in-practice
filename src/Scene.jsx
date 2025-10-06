@@ -8,7 +8,7 @@ import { Car } from "./Car";
 import { Ground } from "./Ground";
 import { Track } from "./Track";
 
-export function Scene() {
+export function Scene({pathPoints}) {
   const [thirdPerson, setThirdPerson] = useState(false);
   const [cameraPosition, setCameraPosition] = useState([0, 3.9, 6.21]);
 
@@ -25,14 +25,6 @@ export function Scene() {
     return () => window.removeEventListener("keydown", keydownHandler);
   }, [thirdPerson]);
 
-  const pathPoints = [
-    { x: -1, z: -1 },
-    { x: 2, z: 2 },
-    { x: 1, z: 0 },
-    { x: 1, z: -1 },
-    { x: -1, z: -2 },
-    { x: -1, z: -1 },
-  ];
 
   return (
     <Suspense fallback={null}>
