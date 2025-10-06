@@ -52,7 +52,7 @@ export function Ground() {
     <>
       <mesh
         ref={meshRef2}
-        position={[-2.285, -0.01, -1.325]}
+        position={[0, -0.01, -1.325]}
         rotation-x={-Math.PI * 0.5}
       >
         <planeGeometry args={[12, 12]} />

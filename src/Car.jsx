@@ -1,56 +1,73 @@
-import { useFrame, useLoader } from "@react-three/fiber";
+import { useLoader, useFrame } from "@react-three/fiber";
 import { useRef, useEffect, useState } from "react";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader";
 import * as THREE from "three";
 
-export function Car() {
+export function Car({ pathPoints }) {
   const ref = useRef();
-  const result = useLoader(GLTFLoader, process.env.PUBLIC_URL + "/models/car.glb").scene;
-  const [step, setStep] = useState(0);
-  const [timer, setTimer] = useState(0);
+  const model = useLoader(GLTFLoader, process.env.PUBLIC_URL + "/models/car.glb").scene;
 
-  const speed = 1; // m/s
-  const turnSpeed = Math.PI / 2; // 90° en 1 s
-  const stepDuration = 3; // 3 s par côté
+  const [currentIndex, setCurrentIndex] = useState(0);
+  const [t, setT] = useState(0);
+  const [thirdPerson, setThirdPerson] = useState(false); // vue embarquée toggle avec K
 
+  const speed = 0.004; // vitesse de progression
+  const rotLerp = 0.1; // douceur de rotation
+
+  // 🔑 Gestion de la touche "K" (vue embarquée)
   useEffect(() => {
-    result.scale.set(0.0012, 0.0012, 0.0012);
-    result.children[0].position.set(-365, -18, -67);
-  }, [result]);
+    const handleKey = (e) => {
+      if (e.key.toLowerCase() === "k") setThirdPerson((v) => !v);
+    };
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+  }, []);
 
+  // 🧩 Initialisation du modèle
+  useEffect(() => {
+    if (!model) return;
+    model.scale.set(0.0012, 0.0012, 0.0012);
+    model.children[0].position.set(-365, -18, -67);
+  }, [model]);
+
+  // 🚗 Animation du parcours
   useFrame((state, delta) => {
-    if (!ref.current) return;
+    if (!ref.current || !pathPoints || pathPoints.length < 2) return;
 
-    setTimer((t) => t + delta);
+    const p1 = new THREE.Vector3(pathPoints[currentIndex].x, 0, pathPoints[currentIndex].z);
+    const p2 = new THREE.Vector3(pathPoints[currentIndex + 1].x, 0, pathPoints[currentIndex + 1].z);
 
-    // Avance sur 4 côtés, tourne à chaque coin
-    if (timer < stepDuration) {
-      // avance tout droit
-      ref.current.position.x += Math.sin(ref.current.rotation.y) * speed * delta;
-      ref.current.position.z += Math.cos(ref.current.rotation.y) * speed * delta;
-    } else if (timer < stepDuration + 1) {
-      // tourne sur place (90°)
-      ref.current.rotation.y -= turnSpeed * delta;
-    } else {
-      setTimer(0);
-      setStep((s) => (s + 1) % 4); // boucle sur 4 côtés
+    // Avancer sur le segment
+    const newT = t + speed * (delta * 60);
+    if (newT >= 1) {
+      if (currentIndex < pathPoints.length - 2) {
+        setCurrentIndex((i) => i + 1);
+        setT(0);
+      }
+      return;
     }
+    setT(newT);
 
-    // Caméra suiveuse simple
-    state.camera.position.lerp(
-      new THREE.Vector3(
-        ref.current.position.x - 2 * Math.sin(ref.current.rotation.y),
-        1.5,
-        ref.current.position.z - 2 * Math.cos(ref.current.rotation.y)
-      ),
-      0.05
-    );
-    state.camera.lookAt(ref.current.position);
+    const pos = p1.clone().lerp(p2, newT);
+    ref.current.position.copy(pos);
+
+    // Calcul direction et rotation
+    const dir = p2.clone().sub(p1).normalize();
+    const targetAngle = Math.atan2(dir.x, dir.z);
+    ref.current.rotation.y = THREE.MathUtils.lerp(ref.current.rotation.y, targetAngle, rotLerp);
+
+    // 🎥 Caméra embarquée (touche K)
+    if (thirdPerson) {
+      const camOffset = new THREE.Vector3(-dir.x * 3, 1.5, -dir.z * 3);
+      const camPos = pos.clone().add(camOffset);
+      state.camera.position.lerp(camPos, 0.1);
+      state.camera.lookAt(pos);
+    }
   });
 
   return (
     <group ref={ref}>
-      <primitive object={result} rotation-y={Math.PI} />
+      <primitive object={model} rotation-y={Math.PI} />
     </group>
   );
 }

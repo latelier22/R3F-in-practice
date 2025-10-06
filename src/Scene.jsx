@@ -10,7 +10,7 @@ import { Track } from "./Track";
 
 export function Scene() {
   const [thirdPerson, setThirdPerson] = useState(false);
-  const [cameraPosition, setCameraPosition] = useState([-6, 3.9, 6.21]);
+  const [cameraPosition, setCameraPosition] = useState([0, 3.9, 6.21]);
 
   useEffect(() => {
     function keydownHandler(e) {
@@ -24,6 +24,15 @@ export function Scene() {
     window.addEventListener("keydown", keydownHandler);
     return () => window.removeEventListener("keydown", keydownHandler);
   }, [thirdPerson]);
+
+  const pathPoints = [
+    { x: -1, z: -1 },
+    { x: 2, z: 2 },
+    { x: 1, z: 0 },
+    { x: 1, z: -1 },
+    { x: -1, z: -2 },
+    { x: -1, z: -1 },
+  ];
 
   return (
     <Suspense fallback={null}>
@@ -39,7 +48,7 @@ export function Scene() {
 
       <Ground />
       {/* <Track /> */}
-      <Car thirdPerson={thirdPerson} />
+      <Car pathPoints={pathPoints} thirdPerson={thirdPerson} />
     </Suspense>
   );
 }
