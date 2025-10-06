@@ -38,7 +38,7 @@ export function Scene() {
       )}
 
       <Ground />
-      <Track />
+      {/* <Track /> */}
       <Car thirdPerson={thirdPerson} />
     </Suspense>
   );
