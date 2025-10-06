@@ -6,12 +6,13 @@ import { useState } from "react";
 
 export default function App() {
   const [pathPoints, setPathPoints] = useState([]);
+  const [extrusions, setExtrusions] = useState([]);
 
   return (
     <div style={{ display: "flex", height: "100vh" }}>
       {/* 2D map à gauche */}
       <div style={{ width: "35%", height: "100%", borderRight: "2px solid #aaa" }}>
-        <Map2D onPathReady={setPathPoints} />
+       <Map2D onPathReady={setPathPoints} onMapReady={setExtrusions} />
       </div>
 
       {/* 3D scene à droite */}

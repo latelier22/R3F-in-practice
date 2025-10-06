@@ -12,38 +12,38 @@ export function Car({ pathPoints }) {
   const [t, setT] = useState(0);
   const [thirdPerson, setThirdPerson] = useState(false);
 
-  const speed = 0.004;  // vitesse chemin
-  const rotLerp = 0.15; // douceur rotation
+  const speed = 0.004;
+  const rotLerp = 0.15;
 
-  // K = caméra embarquée
+  // --- touche K ---
   useEffect(() => {
-    const onKey = (e) => { if (e.key.toLowerCase() === "k") setThirdPerson(v => !v); };
+    const onKey = (e) => {
+      if (e.key.toLowerCase() === "k") setThirdPerson(v => !v);
+    };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  // init modèle
+  // --- init modèle ---
   useEffect(() => {
     if (!model) return;
     model.scale.set(0.0012, 0.0012, 0.0012);
     model.children[0].position.set(-365, -18, -67);
   }, [model]);
 
-  // Quand un nouveau chemin arrive depuis la carte → reset & démarrer
+  // --- Démarrage du mouvement ---
   useEffect(() => {
     if (pathPoints && pathPoints.length >= 2) {
       setIdx(0);
       setT(0);
       setMoving(true);
-      // Place la voiture sur A
-      if (ref.current) {
-        ref.current.position.set(pathPoints[0].x, 0, pathPoints[0].z);
-      }
+      if (ref.current) ref.current.position.set(pathPoints[0].x, 0, pathPoints[0].z);
     } else {
       setMoving(false);
     }
   }, [pathPoints]);
 
+  // --- Animation ---
   useFrame((state, delta) => {
     if (!ref.current || !moving || !pathPoints || pathPoints.length < 2) return;
 
@@ -56,7 +56,7 @@ export function Car({ pathPoints }) {
         setIdx(i => i + 1);
         setT(0);
       } else {
-        setMoving(false); // fin
+        setMoving(false);
       }
     } else {
       setT(newT);
@@ -65,12 +65,10 @@ export function Car({ pathPoints }) {
     const pos = p1.clone().lerp(p2, newT >= 1 ? 1 : newT);
     ref.current.position.copy(pos);
 
-    // orientation
     const dir = p2.clone().sub(p1).normalize();
     const targetAngle = Math.atan2(dir.x, dir.z);
     ref.current.rotation.y = THREE.MathUtils.lerp(ref.current.rotation.y, targetAngle, rotLerp);
 
-    // caméra embarquée (K)
     if (thirdPerson) {
       const camPos = pos.clone().add(new THREE.Vector3(-dir.x * 3, 1.5, -dir.z * 3));
       state.camera.position.lerp(camPos, 0.1);

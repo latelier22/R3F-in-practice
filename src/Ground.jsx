@@ -70,7 +70,7 @@ export function Ground() {
         rotation-x={-Math.PI * 0.5}
         rotation-z={-0.079}
       >
-        <circleGeometry args={[6.12, 50]} />
+        <circleGeometry args={[6.12, 150]} />
         <MeshReflectorMaterial
           aoMap={aoMap}
           alphaMap={alphaMap}

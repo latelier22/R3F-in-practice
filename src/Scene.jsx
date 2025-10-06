@@ -6,25 +6,24 @@ import {
 import { Suspense, useEffect, useState } from "react";
 import { Car } from "./Car";
 import { Ground } from "./Ground";
-import { Track } from "./Track";
+import { KmlExtrusions } from "./KmlExtrusions";
 
-export function Scene({pathPoints}) {
+export function Scene({ pathPoints }) {
   const [thirdPerson, setThirdPerson] = useState(false);
   const [cameraPosition, setCameraPosition] = useState([0, 3.9, 6.21]);
 
   useEffect(() => {
     function keydownHandler(e) {
-      if (e.key == "k") {
-        // random is necessary to trigger a state change
-        if(thirdPerson) setCameraPosition([-6, 3.9, 6.21 + Math.random() * 0.01]);
-        setThirdPerson(!thirdPerson); 
+      if (e.key === "k") {
+        if (thirdPerson)
+          setCameraPosition([-6, 3.9, 6.21 + Math.random() * 0.01]);
+        setThirdPerson(!thirdPerson);
       }
     }
 
     window.addEventListener("keydown", keydownHandler);
     return () => window.removeEventListener("keydown", keydownHandler);
   }, [thirdPerson]);
-
 
   return (
     <Suspense fallback={null}>
@@ -34,12 +33,10 @@ export function Scene({pathPoints}) {
       />
 
       <PerspectiveCamera makeDefault position={cameraPosition} fov={40} />
-      {!thirdPerson && (
-        <OrbitControls target={[-2.64, -0.71, 0.03]} />
-      )}
+      {!thirdPerson && <OrbitControls target={[0, 0, 0]} />}
 
       <Ground />
-      {/* <Track /> */}
+      <KmlExtrusions /> {/* 🏗️ Bâtiments + Pelouses visibles */}
       <Car pathPoints={pathPoints} thirdPerson={thirdPerson} />
     </Suspense>
   );
