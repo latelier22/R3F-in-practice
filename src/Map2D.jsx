@@ -2,7 +2,7 @@ import "leaflet/dist/leaflet.css";
 import { useEffect } from "react";
 import { createGeoConverter } from "./utils/geo";
 
-export function Map2D({ onPathReady, onMapReady }) {
+export function Map2D({ onPathReady, onMapReady, onNodeSelect }) {
   useEffect(() => {
     const ensureLibs = async () => {
       const needL = !window.L;
@@ -24,6 +24,8 @@ export function Map2D({ onPathReady, onMapReady }) {
     ensureLibs().then(() => init(window.L, window.turf));
 
     function init(L, turf) {
+      let lastPathLayer = null;
+
       const map = L.map("map2d", { preferCanvas: true }).setView([48.185, -2.758], 19);
       L.tileLayer("https://{s}.tile.openstreetmap.fr/osmfr/{z}/{x}/{y}.png", {
         attribution: "© OSM France", maxZoom: 20,
@@ -67,6 +69,10 @@ export function Map2D({ onPathReady, onMapReady }) {
                 selectedNode = id;
                 const path = dijkstra("A", id);
                 highlightPath(path);
+                if (typeof onNodeSelect === "function") {
+                  console.log("📍 Noeud sélectionné :", id);
+                  onNodeSelect(id);
+                }
               });
 
               allNodes.push({ id, lat, lon });
@@ -140,13 +146,23 @@ export function Map2D({ onPathReady, onMapReady }) {
           }
 
           function highlightPath(path) {
+            // Efface le trajet précédent
+            if (lastPathLayer) {
+              map.removeLayer(lastPathLayer);
+              lastPathLayer = null;
+            }
+
             if (!path.length) return;
+
             const latlngs = path.map(id => {
               const n = allNodes.find(nn => nn.id === id);
               return [n.lat, n.lon];
             });
-            L.polyline(latlngs, { color: "orange", weight: 4 }).addTo(map);
+
+            // Enregistre la nouvelle ligne pour pouvoir la supprimer plus tard
+            lastPathLayer = L.polyline(latlngs, { color: "orange", weight: 4 }).addTo(map);
           }
+
 
           function nodeTo3D(id) {
             const n = allNodes.find(nn => nn.id === id);
@@ -155,14 +171,25 @@ export function Map2D({ onPathReady, onMapReady }) {
             return { x: v.x, z: -v.y };
           }
 
-          // 🔹 Espace → envoie le chemin 3D à la voiture
-          window.addEventListener("keydown", (e) => {
-            if (e.code === "Space" && selectedNode) {
-              const path = dijkstra("A", selectedNode);
-              const path3D = path.map(id => nodeTo3D(id));
-              onPathReady(path3D);
-            }
-          });
+          // 🔹 Fonction publique pour déclencher l’appel depuis le bouton
+function triggerAppel() {
+  if (selectedNode) {
+    const path = dijkstra("A", selectedNode);
+    const path3D = path.map(id => nodeTo3D(id));
+    onPathReady(path3D);
+  } else {
+    alert("⚠️ Aucun nœud sélectionné !");
+  }
+}
+
+// 🔹 On l’expose globalement pour l’App
+window.callAppelFromButton = triggerAppel;
+
+// 🔹 On garde aussi la version clavier
+window.addEventListener("keydown", (e) => {
+  if ((e.code === "Space" || e.key === " ")) triggerAppel();
+});
+
         });
     }
   }, [onPathReady, onMapReady]);

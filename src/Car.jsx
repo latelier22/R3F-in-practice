@@ -10,24 +10,28 @@ export function Car({ pathPoints }) {
   const [moving, setMoving] = useState(false);
   const [idx, setIdx] = useState(0);
   const [t, setT] = useState(0);
-  const [thirdPerson, setThirdPerson] = useState(false);
 
-  const speed = 0.004;
-  const rotLerp = 0.15;
+  // 0 = orbit, 1 = caméra arrière, 2 = caméra proche
+  const [camMode, setCamMode] = useState(0);
 
-  // --- touche K ---
+  const baseSpeed = 0.004;
+  const baseRotLerp = 0.12;
+
+  // --- Touche K : cycle caméra ---
   useEffect(() => {
     const onKey = (e) => {
-      if (e.key.toLowerCase() === "k") setThirdPerson(v => !v);
+      if (e.key.toLowerCase() === "k") {
+        setCamMode((m) => (m + 1) % 3);
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  // --- init modèle ---
+  // --- Initialisation modèle ---
   useEffect(() => {
     if (!model) return;
-    model.scale.set(0.0012, 0.0012, 0.0012);
+    model.scale.set(0.0003, 0.0003, 0.0003); // 0.5m environ
     model.children[0].position.set(-365, -18, -67);
   }, [model]);
 
@@ -37,7 +41,8 @@ export function Car({ pathPoints }) {
       setIdx(0);
       setT(0);
       setMoving(true);
-      if (ref.current) ref.current.position.set(pathPoints[0].x, 0, pathPoints[0].z);
+      if (ref.current)
+        ref.current.position.set(pathPoints[0].x, 0, pathPoints[0].z);
     } else {
       setMoving(false);
     }
@@ -49,11 +54,27 @@ export function Car({ pathPoints }) {
 
     const p1 = new THREE.Vector3(pathPoints[idx].x, 0, pathPoints[idx].z);
     const p2 = new THREE.Vector3(pathPoints[idx + 1].x, 0, pathPoints[idx + 1].z);
+    const p3 =
+      pathPoints[idx + 2] &&
+      new THREE.Vector3(pathPoints[idx + 2].x, 0, pathPoints[idx + 2].z);
 
-    const newT = t + speed * (delta * 60);
+    // --- Calcul direction ---
+    const dir = p2.clone().sub(p1).normalize();
+
+    // angle du prochain segment si dispo (pour anticiper virage)
+    let turnFactor = 1;
+    if (p3) {
+      const nextDir = p3.clone().sub(p2).normalize();
+      const angle = dir.angleTo(nextDir);
+      turnFactor = 1 - Math.min(angle / Math.PI, 0.7); // réduit la vitesse sur virage serré
+    }
+
+    const adjustedSpeed = baseSpeed * (0.5 + 0.5 * turnFactor);
+    const newT = t + adjustedSpeed * (delta * 60);
+
     if (newT >= 1) {
       if (idx < pathPoints.length - 2) {
-        setIdx(i => i + 1);
+        setIdx((i) => i + 1);
         setT(0);
       } else {
         setMoving(false);
@@ -62,16 +83,29 @@ export function Car({ pathPoints }) {
       setT(newT);
     }
 
-    const pos = p1.clone().lerp(p2, newT >= 1 ? 1 : newT);
+    // --- Position ---
+    const pos = p1.clone().lerp(p2, Math.min(newT, 1));
     ref.current.position.copy(pos);
 
-    const dir = p2.clone().sub(p1).normalize();
+    // --- Rotation fluide ---
     const targetAngle = Math.atan2(dir.x, dir.z);
-    ref.current.rotation.y = THREE.MathUtils.lerp(ref.current.rotation.y, targetAngle, rotLerp);
+    const currentAngle = ref.current.rotation.y;
+    let deltaAngle = targetAngle - currentAngle;
+    deltaAngle = Math.atan2(Math.sin(deltaAngle), Math.cos(deltaAngle));
 
-    if (thirdPerson) {
-      const camPos = pos.clone().add(new THREE.Vector3(-dir.x * 3, 1.5, -dir.z * 3));
-      state.camera.position.lerp(camPos, 0.1);
+    const rotLerp = baseRotLerp * (0.6 + 0.4 * turnFactor); // rotation + lente dans virages
+    ref.current.rotation.y = currentAngle + deltaAngle * rotLerp;
+
+    // --- Caméras ---
+    if (camMode > 0) {
+      // Caméra embarquée
+      const dist = camMode === 1 ? 1.5 : 0.2; // moyenne ou proche
+      const height = camMode === 1 ? 0.7 : 0.1;
+      const camPos = pos.clone().add(
+        new THREE.Vector3(-dir.x * dist, height, -dir.z * dist)
+      );
+
+      state.camera.position.lerp(camPos, 0.08);
       state.camera.lookAt(pos);
     }
   });

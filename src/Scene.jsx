@@ -7,6 +7,8 @@ import { Suspense, useEffect, useState } from "react";
 import { Car } from "./Car";
 import { Ground } from "./Ground";
 import { KmlExtrusions } from "./KmlExtrusions";
+import { Woman } from "./Woman";
+import  Wildlife  from "./WildLife";
 
 export function Scene({ pathPoints }) {
   const [thirdPerson, setThirdPerson] = useState(false);
@@ -31,12 +33,14 @@ export function Scene({ pathPoints }) {
         files={process.env.PUBLIC_URL + "/textures/envmap.hdr"}
         background={"both"}
       />
-
       <PerspectiveCamera makeDefault position={cameraPosition} fov={40} />
       {!thirdPerson && <OrbitControls target={[0, 0, 0]} />}
-
       <Ground />
-      <KmlExtrusions /> {/* 🏗️ Bâtiments + Pelouses visibles */}
+      <KmlExtrusions />
+      {/* <Wildlife animalsQuantity={10} /> */}
+
+      <Woman position={[0, 0, 0]} />
+      <Woman position={[-1, 0, 0]} />
       <Car pathPoints={pathPoints} thirdPerson={thirdPerson} />
     </Suspense>
   );

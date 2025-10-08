@@ -55,7 +55,7 @@ export function KmlExtrusions({ file = "/lycee.kml", onOrigin }) {
 
       const isBat = name.includes("bat");
       const isPelouse = name === "" || name.includes("sans titre");
-      const depth = isBat ? 2 : isPelouse ? 0.1 : 0;
+      const depth = isBat ? 1 : isPelouse ? 0.01 : 0;
       if (!depth) return;
 
       const color = isBat ? 0x1e90ff : 0x228b22;
@@ -64,7 +64,7 @@ export function KmlExtrusions({ file = "/lycee.kml", onOrigin }) {
         new THREE.MeshStandardMaterial({ color, opacity: 0.85, transparent: true })
       );
       mesh.rotation.x = -Math.PI / 2;
-      mesh.position.y = -0.05;
+      mesh.position.y = 0.00;
       scene.add(mesh);
     });
   }
