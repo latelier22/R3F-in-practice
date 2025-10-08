@@ -53,6 +53,8 @@ export default function App() {
   const [lastPath, setLastPath] = useState(null);
   const selectedNodeRef = useRef(null); // ✅ stable, non réinitialisé
 
+  const [mapData, setMapData] = useState(null);
+
   // ✅ quand un point est cliqué sur la carte
   const handleNodeSelect = (id) => {
     console.log("✅ Node sélectionné :", id);
@@ -96,21 +98,18 @@ export default function App() {
     <div style={containerStyle}>
       {/* Carte 2D */}
       <div style={mapStyle}>
-        <Map2D
-          onPathReady={(pts) => {
-            setPathPoints(pts);
-            setLastPath(pts);
-          }}
-          onMapReady={() => {}}
-          onNodeSelect={handleNodeSelect}
-        />
+       <Map2D
+  onPathReady={(pts) => { setPathPoints(pts); setLastPath(pts); }}
+  onMapReady={(data) => setMapData(data)}
+  onNodeSelect={handleNodeSelect}
+/>
       </div>
 
       {/* Scène 3D */}
       <div style={sceneStyle}>
         <Canvas shadows>
           <Physics gravity={[0, -9.81, 0]}>
-            <Scene pathPoints={pathPoints} />
+           {mapData && <Scene pathPoints={pathPoints} mapData={mapData} />}
           </Physics>
         </Canvas>
 

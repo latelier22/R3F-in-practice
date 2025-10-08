@@ -1,46 +1,54 @@
+// src/Scene.jsx
 import {
   Environment,
   OrbitControls,
   PerspectiveCamera,
 } from "@react-three/drei";
 import { Suspense, useEffect, useState } from "react";
-import { Car } from "./Car";
 import { Ground } from "./Ground";
 import { KmlExtrusions } from "./KmlExtrusions";
 import { Woman } from "./Woman";
-import  Wildlife  from "./WildLife";
+import { Car } from "./Car";
 
-export function Scene({ pathPoints }) {
+export function Scene({ pathPoints, mapData }) {
   const [thirdPerson, setThirdPerson] = useState(false);
   const [cameraPosition, setCameraPosition] = useState([0, 3.9, 6.21]);
 
   useEffect(() => {
-    function keydownHandler(e) {
-      if (e.key === "k") {
-        if (thirdPerson)
-          setCameraPosition([-6, 3.9, 6.21 + Math.random() * 0.01]);
-        setThirdPerson(!thirdPerson);
-      }
-    }
-
-    window.addEventListener("keydown", keydownHandler);
-    return () => window.removeEventListener("keydown", keydownHandler);
-  }, [thirdPerson]);
+    const handler = (e) => {
+      if (e.key === "k") setThirdPerson(t => !t);
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, []);
 
   return (
     <Suspense fallback={null}>
-      <Environment
-        files={process.env.PUBLIC_URL + "/textures/envmap.hdr"}
-        background={"both"}
-      />
+      <Environment files={process.env.PUBLIC_URL + "/textures/envmap.hdr"} background={"both"} />
       <PerspectiveCamera makeDefault position={cameraPosition} fov={40} />
       {!thirdPerson && <OrbitControls target={[0, 0, 0]} />}
       <Ground />
       <KmlExtrusions />
-      {/* <Wildlife animalsQuantity={10} /> */}
 
-      <Woman position={[0, 0, 0]} />
-      <Woman position={[-1, 0, 0]} />
+      {mapData?.nodes?.length > 0 &&
+        [...Array(3)].map((_, i) => {
+          const start = mapData.nodes[Math.floor(Math.random() * mapData.nodes.length)];
+          let end = mapData.nodes[Math.floor(Math.random() * mapData.nodes.length)];
+          while (end.id === start.id) {
+            end = mapData.nodes[Math.floor(Math.random() * mapData.nodes.length)];
+          }
+          return (
+            <Woman
+              key={i}
+              id={`W${i}`}
+              mapData={mapData}
+              startNode={start}
+              endNode={end}
+              speed={0.02}
+            />
+          );
+        })}
+
       <Car pathPoints={pathPoints} thirdPerson={thirdPerson} />
     </Suspense>
   );
