@@ -30,24 +30,10 @@ export function Scene({ pathPoints, mapData }) {
       <Ground />
       <KmlExtrusions />
 
-      {mapData?.nodes?.length > 0 &&
-        [...Array(3)].map((_, i) => {
-          const start = mapData.nodes[Math.floor(Math.random() * mapData.nodes.length)];
-          let end = mapData.nodes[Math.floor(Math.random() * mapData.nodes.length)];
-          while (end.id === start.id) {
-            end = mapData.nodes[Math.floor(Math.random() * mapData.nodes.length)];
-          }
-          return (
-            <Woman
-              key={i}
-              id={`W${i}`}
-              mapData={mapData}
-              startNode={start}
-              endNode={end}
-              speed={0.02}
-            />
-          );
-        })}
+    {mapData && [...Array(50)].map((_, i) => (
+  <Woman key={i} wid={`W${i}`} mapData={mapData} speed={0.002} />
+))}
+
 
       <Car pathPoints={pathPoints} thirdPerson={thirdPerson} />
     </Suspense>

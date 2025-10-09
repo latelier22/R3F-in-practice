@@ -1,33 +1,48 @@
-// src/Woman.jsx
 import React, { useRef, useEffect, useMemo, useState } from "react";
 import { useGLTF } from "@react-three/drei";
 import { clone } from "three/examples/jsm/utils/SkeletonUtils.js";
 import * as THREE from "three";
 
-export function Woman({ id = "W", mapData, startNode, endNode, speed = 0.02 }) {
+export function Woman({ wid = "W0", mapData, speed = 0.002 }) {
   const group = useRef();
   const { scene, animations } = useGLTF("/models/woman.glb");
 
-  // Clone indépendant
+  // ✅ Clone indépendant
   const cloned = useMemo(() => clone(scene), [scene]);
   const mixer = useMemo(() => new THREE.AnimationMixer(cloned), [cloned]);
   const clock = useMemo(() => new THREE.Clock(), []);
+  const randomScale = useMemo(() => 0.09 + Math.random() * 0.03, []); // tailles variées
 
-  const [path, setPath] = useState([]); // points {x,z}
-  const [segmentIndex, setSegmentIndex] = useState(0);
+  // 🎨 Variation couleur
+  useEffect(() => {
+    cloned.traverse((obj) => {
+      if (obj.isMesh && obj.material) {
+        const mat = obj.material;
+        if (/hair/i.test(mat.name)) {
+          mat.color = new THREE.Color(`hsl(${20 + Math.random() * 40}, 40%, ${25 + Math.random() * 40}%)`);
+        } else if (/cloth|shirt|pant|dress/i.test(mat.name)) {
+          mat.color = new THREE.Color(`hsl(${Math.random() * 360}, 50%, 45%)`);
+        }
+      }
+    });
+  }, [cloned]);
 
-  // --- Dijkstra sur mapData ---
-  function dijkstra(start, end) {
-    if (!mapData) return [];
-    const { nodes, links } = mapData;
-    const dist = {}, prev = {}, Q = new Set(nodes.map(n => n.id));
-    nodes.forEach(n => dist[n.id] = Infinity);
-    dist[start] = 0;
+  const [nodeIds, setNodeIds] = useState([]);
+  const [points3D, setPoints3D] = useState([]);
+  const [seg, setSeg] = useState(0);
+
+  const dijkstra = (startId, endId) => {
+    const nodes = mapData.nodes;
+    const links = mapData.links;
+    const dist = {}, prev = {};
+    const Q = new Set(nodes.map(n => n.id));
+    nodes.forEach(n => (dist[n.id] = Infinity));
+    dist[startId] = 0;
 
     while (Q.size) {
-      const u = [...Q].reduce((a, b) => dist[a] < dist[b] ? a : b);
+      let u = [...Q].reduce((a, b) => (dist[a] < dist[b] ? a : b));
       Q.delete(u);
-      if (u === end) break;
+      if (u === endId) break;
       links
         .filter(l => l.from === u || l.to === u)
         .forEach(l => {
@@ -38,23 +53,29 @@ export function Woman({ id = "W", mapData, startNode, endNode, speed = 0.02 }) {
         });
     }
 
-    const pathIds = [];
-    for (let u = end; u; u = prev[u]) pathIds.unshift(u);
-    if (pathIds.length < 2) return [];
+    const ids = [];
+    for (let u = endId; u; u = prev[u]) ids.unshift(u);
+    return ids;
+  };
 
-    const pts = pathIds.map(id => {
-      const n = mapData.nodes.find(nn => nn.id === id);
-      return { x: n.x, z: -n.z };
-    });
-
-    // trace sur carte 2D
-    if (window.map2D_drawLocalPath) {
-      window.map2D_drawLocalPath(id, pts);
+  const pickRoute = () => {
+    const nodes = mapData.nodes;
+    if (!nodes?.length) return { ids: [], pts: [] };
+    const start = nodes[Math.floor(Math.random() * nodes.length)].id;
+    let ids = [];
+    for (let tries = 0; tries < 30; tries++) {
+      const end = nodes[Math.floor(Math.random() * nodes.length)].id;
+      if (end === start) continue;
+      ids = dijkstra(start, end);
+      if (ids.length >= 2) break;
     }
-    return pts;
-  }
+    const pts = ids.map(id => {
+      const n = nodes.find(nn => nn.id === id);
+      return { x: n.x, z: n.z }; // 🔁 cohérent avec Car
+    });
+    return { ids, pts };
+  };
 
-  // --- Animation et mouvement ---
   useEffect(() => {
     if (!animations?.length) return;
     const action = mixer.clipAction(animations[0]);
@@ -63,52 +84,59 @@ export function Woman({ id = "W", mapData, startNode, endNode, speed = 0.02 }) {
     const hips = cloned.getObjectByName("mixamorigHips");
     const basePos = hips ? hips.position.clone() : new THREE.Vector3();
 
+    let rafId;
     const tick = () => {
       const delta = clock.getDelta();
       mixer.update(delta);
       if (hips) hips.position.copy(basePos);
 
-      if (group.current && path.length > 1) {
+      if (group.current && points3D.length > 1 && points3D[seg + 1]) {
         const pos = group.current.position;
-        const p1 = new THREE.Vector3(path[segmentIndex].x, 0, path[segmentIndex].z);
-        const p2 = new THREE.Vector3(path[segmentIndex + 1].x, 0, path[segmentIndex + 1].z);
+        const p1 = new THREE.Vector3(points3D[seg].x, 0, points3D[seg].z);
+        const p2 = new THREE.Vector3(points3D[seg + 1].x, 0, points3D[seg + 1].z);
         const dir = p2.clone().sub(p1).normalize();
+
         pos.addScaledVector(dir, speed);
 
-        // rotation douce vers direction
-        const angle = Math.atan2(dir.x, dir.z);
-        group.current.rotation.y = THREE.MathUtils.lerpAngle(group.current.rotation.y, angle, 0.1);
+        const target = Math.atan2(dir.x, dir.z);
+        let dAng = target - group.current.rotation.y;
+        dAng = Math.atan2(Math.sin(dAng), Math.cos(dAng));
+        group.current.rotation.y += dAng * 0.12;
 
-        // passage segment suivant
-        if (pos.distanceTo(p2) < 0.15 && segmentIndex < path.length - 2) {
-          setSegmentIndex(i => i + 1);
+        if (pos.distanceTo(p2) < 0.015) { // ✅ seuil affiné
+          if (seg < points3D.length - 2) setSeg(s => s + 1);
+          else {
+            const { ids, pts } = pickRoute();
+            setNodeIds(ids);
+            setPoints3D(pts);
+            setSeg(0);
+            pos.set(pts[0].x, 0, pts[0].z);
+            // window.map2D_drawByNodeIds && window.map2D_drawByNodeIds(wid, ids, "#c03");
+          }
         }
       }
 
-      requestAnimationFrame(tick);
+      rafId = requestAnimationFrame(tick);
     };
+    rafId = requestAnimationFrame(tick);
+    return () => { cancelAnimationFrame(rafId); action.stop(); };
+  }, [animations, mixer, cloned, clock, points3D, seg, speed, wid]);
 
-    tick();
-    return () => action.stop();
-  }, [animations, mixer, cloned, clock, path, segmentIndex, speed]);
-
-  // --- Génération du chemin unique pour cette Woman ---
   useEffect(() => {
-    if (!mapData || !startNode || !endNode) return;
-    const newPath = dijkstra(startNode.id, endNode.id);
-    if (newPath.length >= 2) {
-      setPath(newPath);
-      setSegmentIndex(0);
-      // positionne la femme au départ
-      if (group.current) {
-        group.current.position.set(newPath[0].x, 0, newPath[0].z);
-      }
+    if (!mapData) return;
+    const { ids, pts } = pickRoute();
+    if (ids.length >= 2) {
+      setNodeIds(ids);
+      setPoints3D(pts);
+      setSeg(0);
+      if (group.current) group.current.position.set(pts[0].x, 0, pts[0].z);
+    //   window.map2D_drawByNodeIds && window.map2D_drawByNodeIds(wid, ids, "#c03");
     }
-  }, [mapData, startNode, endNode]);
+  }, [mapData, wid]);
 
   return (
     <group ref={group}>
-      <primitive object={cloned} scale={0.1} />
+      <primitive object={cloned} scale={randomScale} />
     </group>
   );
 }

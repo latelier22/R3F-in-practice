@@ -1,11 +1,8 @@
-// src/Map2D.jsx
 import "leaflet/dist/leaflet.css";
-import { useEffect, useRef } from "react";
+import { useEffect } from "react";
 import { createGeoConverter } from "./utils/geo";
 
 export function Map2D({ onPathReady, onMapReady, onNodeSelect }) {
-  const mapRef = useRef(null);
-
   useEffect(() => {
     const ensureLibs = async () => {
       const needL = !window.L;
@@ -14,33 +11,27 @@ export function Map2D({ onPathReady, onMapReady, onNodeSelect }) {
       if (needL) {
         const s = document.createElement("script");
         s.src = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js";
-        loaders.push(new Promise((res) => { s.onload = res; document.head.appendChild(s); }));
+        loaders.push(new Promise(res => { s.onload = res; document.head.appendChild(s); }));
       }
       if (needT) {
         const s = document.createElement("script");
         s.src = "https://unpkg.com/@turf/turf@6/turf.min.js";
-        loaders.push(new Promise((res) => { s.onload = res; document.head.appendChild(s); }));
+        loaders.push(new Promise(res => { s.onload = res; document.head.appendChild(s); }));
       }
       await Promise.all(loaders);
     };
 
-    ensureLibs().then(() => {
-      if (!mapRef.current) init(window.L, window.turf);
-    });
+    ensureLibs().then(() => init(window.L, window.turf));
 
     function init(L, turf) {
-      // évite l’erreur “Map container is already initialized”
-      if (mapRef.current || (L.DomUtil.get("map2d") && L.DomUtil.get("map2d")._leaflet_id)) return;
+      // Empêche la double init
+      if (window.__map2d) return;
 
       const map = L.map("map2d", { preferCanvas: true }).setView([48.185, -2.758], 19);
-      mapRef.current = map;
-
+      window.__map2d = map;
       L.tileLayer("https://{s}.tile.openstreetmap.fr/osmfr/{z}/{x}/{y}.png", {
         attribution: "© OSM France", maxZoom: 20,
       }).addTo(map);
-
-      const SCALE = 0.05; // même valeur que KmlExtrusions / toLocal
-      const R = 6378137;
 
       let allNodes = [], allLinks = [], obstacles = [], extrusionsData = [];
       let selectedNode = null;
@@ -48,8 +39,24 @@ export function Map2D({ onPathReady, onMapReady, onNodeSelect }) {
       let toLocal = null;
       let lastPathLayer = null;
 
-      // stockage des tracés par agent
-      const agentLayers = new Map();
+      // stocke les polylignes par femme
+      const pathLayersByWoman = {};
+      map.__pathsByWoman = pathLayersByWoman;
+
+      // API publique pour dessiner un trajet depuis une liste d'IDs
+      window.map2D_drawByNodeIds = (wid, nodeIds, color = "#c03") => {
+        if (!nodeIds || nodeIds.length < 2) return;
+        // Efface la précédente
+        if (pathLayersByWoman[wid]) {
+          map.removeLayer(pathLayersByWoman[wid]);
+          delete pathLayersByWoman[wid];
+        }
+        const latlngs = nodeIds.map(id => {
+          const n = allNodes.find(nn => nn.id === id);
+          return [n.lat, n.lon];
+        });
+        pathLayersByWoman[wid] = L.polyline(latlngs, { color, weight: 4, opacity: 0.8 }).addTo(map);
+      };
 
       const nodeName = (i) => {
         let s = "";
@@ -58,41 +65,39 @@ export function Map2D({ onPathReady, onMapReady, onNodeSelect }) {
       };
 
       fetch(process.env.PUBLIC_URL + "/lycee.kml")
-        .then((r) => r.text())
-        .then((txt) => {
+        .then(r => r.text())
+        .then(txt => {
           const xml = new DOMParser().parseFromString(txt, "text/xml");
           const placemarks = xml.querySelectorAll("Placemark");
 
-          placemarks.forEach((pm) => {
+          placemarks.forEach(pm => {
             const name = pm.querySelector("name")?.textContent || "";
             const point = pm.querySelector("Point>coordinates");
             const poly = pm.querySelector("Polygon>outerBoundaryIs>LinearRing>coordinates");
 
-            // Points (nœuds)
             if (point) {
               const [lon, lat] = point.textContent.trim().split(",").map(Number);
               const id = nodeName(allNodes.length);
               if (id === "A") {
                 originA = { lat, lon };
-                toLocal = createGeoConverter(lat, lon, SCALE);
+                // IMPORTANT : même conversion que KmlExtrusions/Car → z = -y
+                toLocal = createGeoConverter(lat, lon, 0.05);
               }
 
               const marker = L.circleMarker([lat, lon], {
                 radius: 6, color: "black", fillColor: "orange", fillOpacity: 0.9,
               }).addTo(map);
               marker.bindTooltip(id);
-
               marker.on("click", () => {
                 selectedNode = id;
                 const path = dijkstra("A", id);
-                highlightPath(path);
-                if (typeof onNodeSelect === "function") onNodeSelect(id);
+                highlightRobotPath(path);
+                onNodeSelect && onNodeSelect(id);
               });
 
               allNodes.push({ id, lat, lon });
             }
 
-            // Polygones
             if (poly) {
               const coords = poly.textContent.trim().split(/\s+/).map(c => {
                 const [lon, lat] = c.split(",").map(Number);
@@ -105,14 +110,13 @@ export function Map2D({ onPathReady, onMapReady, onNodeSelect }) {
               } else if (name.toLowerCase().includes("bat")) {
                 color = "blue"; fill = "lightblue"; type = "bat";
               }
-
               L.polygon(coords, { color, fillColor: fill, fillOpacity: 0.5 }).addTo(map);
               obstacles.push(coords);
               extrusionsData.push({ coords, type });
             }
           });
 
-          // Liens du graphe (chemins autorisés)
+          // Liaisons autorisées uniquement (même logique que la voiture)
           for (let i = 0; i < allNodes.length; i++) {
             for (let j = i + 1; j < allNodes.length; j++) {
               const n1 = allNodes[i], n2 = allNodes[j];
@@ -128,25 +132,6 @@ export function Map2D({ onPathReady, onMapReady, onNodeSelect }) {
             }
           }
 
-          // Envoi vers la 3D
-          if (onMapReady && originA) {
-            onMapReady({
-              extrusions3D: extrusionsData.map(obj => ({
-                shape: obj.coords.map(([lat, lon]) => {
-                  const v = toLocal(lat, lon);
-                  return { x: v.x, z: v.y };
-                }),
-                type: obj.type
-              })),
-              nodes: allNodes.map(n => {
-                const v = toLocal(n.lat, n.lon);
-                return { id: n.id, x: v.x, z: v.y };
-              }),
-              links: allLinks
-            });
-          }
-
-          // ---- Algorithmes / helpers ----
           function dijkstra(start, end) {
             const dist = {}, prev = {}, Q = new Set(allNodes.map(n => n.id));
             allNodes.forEach(n => dist[n.id] = Infinity);
@@ -162,13 +147,16 @@ export function Map2D({ onPathReady, onMapReady, onNodeSelect }) {
                 if (alt < dist[v]) { dist[v] = alt; prev[v] = u; }
               });
             }
-            let path = [], u = end;
-            while (u) { path.unshift(u); u = prev[u]; }
+            const path = [];
+            for (let u = end; u; u = prev[u]) path.unshift(u);
             return path;
           }
 
-          function highlightPath(path) {
-            if (lastPathLayer) map.removeLayer(lastPathLayer);
+          function highlightRobotPath(path) {
+            if (lastPathLayer) {
+              map.removeLayer(lastPathLayer);
+              lastPathLayer = null;
+            }
             if (!path.length) return;
             const latlngs = path.map(id => {
               const n = allNodes.find(nn => nn.id === id);
@@ -177,50 +165,18 @@ export function Map2D({ onPathReady, onMapReady, onNodeSelect }) {
             lastPathLayer = L.polyline(latlngs, { color: "orange", weight: 4 }).addTo(map);
           }
 
-          // inverse de toLocal : (x,z local 3D) -> (lat, lon)
-          function fromLocal(x, z) {
-            if (!originA) return { lat: 0, lon: 0 };
-            const phi0 = originA.lat * Math.PI / 180;
-            const dLat = (-z) / (R * SCALE); // attention au signe: Three z = -local y
-            const dLon = (x) / (R * Math.cos(phi0) * SCALE);
-            return {
-              lat: originA.lat + dLat * 180 / Math.PI,
-              lon: originA.lon + dLon * 180 / Math.PI
-            };
-          }
-
-          function colorFor(id) {
-            // couleur stable par id
-            let h = 0;
-            for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) % 360;
-            return `hsl(${h}, 85%, 50%)`;
-          }
-
-          // ---- API PUBLIQUE POUR LES WOMEN ----
-          window.map2D_drawLocalPath = (agentId, localPoints /* [{x,z}, ...] */) => {
-            if (!Array.isArray(localPoints) || localPoints.length < 2) return;
-
-            // convertit en lat/lon
-            const latlngs = localPoints.map(p => {
-              const { lat, lon } = fromLocal(p.x, p.z);
-              return [lat, lon];
+          // Push vers la 3D : nœuds en repère 3D (x, z = -y), + liens filtrés
+          if (onMapReady && originA && toLocal) {
+            onMapReady({
+              nodes: allNodes.map(n => {
+                const v = toLocal(n.lat, n.lon); // {x, y}
+                return { id: n.id, x: v.x, z: -v.y }; // repère 3D
+              }),
+              links: allLinks
             });
+          }
 
-            // remplace la polyline de cet agent
-            const old = agentLayers.get(agentId);
-            if (old) map.removeLayer(old);
-
-            const line = L.polyline(latlngs, { color: colorFor(agentId), weight: 3, opacity: 0.9 })
-              .addTo(map);
-            agentLayers.set(agentId, line);
-          };
-
-          window.map2D_clearAgentPath = (agentId) => {
-            const old = agentLayers.get(agentId);
-            if (old) { map.removeLayer(old); agentLayers.delete(agentId); }
-          };
-
-          // ---- Appel robot (Espace + bouton) ----
+          // Appel depuis bouton APPEL (voitue)
           function nodeTo3D(id) {
             const n = allNodes.find(nn => nn.id === id);
             if (!n || !toLocal) return { x: 0, z: 0 };
@@ -229,9 +185,9 @@ export function Map2D({ onPathReady, onMapReady, onNodeSelect }) {
           }
           function triggerAppel() {
             if (selectedNode) {
-              const path = dijkstra("A", selectedNode);
-              const path3D = path.map(id => nodeTo3D(id));
-              onPathReady(path3D);
+              const ids = dijkstra("A", selectedNode);
+              const path3D = ids.map(id => nodeTo3D(id));
+              onPathReady && onPathReady(path3D);
             } else {
               alert("⚠️ Aucun nœud sélectionné !");
             }
