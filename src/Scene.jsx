@@ -7,9 +7,10 @@ import {
 import { Suspense, useEffect, useState } from "react";
 import { Ground } from "./Ground";
 import { KmlExtrusions } from "./KmlExtrusions";
-import { Woman } from "./Woman";
+import { Woman } from "./Characters/Woman";
 import { Car } from "./Car";
-import { Remi } from "./Remi";
+import { Remi } from "./Characters/Remi";
+import { CharactersGroup } from "./CharactersGroup";
 
 export function Scene({ pathPoints, mapData }) {
   const [thirdPerson, setThirdPerson] = useState(false);
@@ -32,13 +33,14 @@ export function Scene({ pathPoints, mapData }) {
       <KmlExtrusions />
       
 
-    {mapData && [...Array(10)].map((_, i) => (
+    {/* {mapData && [...Array(10)].map((_, i) => (
       <>
   <Woman key={i} wid={`W${i}`} mapData={mapData} speed={0.002} />
    <Remi key={i} wid={`W${i}`} mapData={mapData} speed={0.002} />
-      </>
+      </> */}
   
-))}
+{/* ))} */}
+      <CharactersGroup mapData={mapData} nRemi={20} nWoman={20} />
 
 
       <Car pathPoints={pathPoints} thirdPerson={thirdPerson} />
