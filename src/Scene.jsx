@@ -9,7 +9,7 @@ import { Ground } from "./Ground";
 import { KmlExtrusions } from "./KmlExtrusions";
 import { Woman } from "./Woman";
 import { Car } from "./Car";
-import { RemiAnimated } from "./Remi";
+import { Remi } from "./Remi";
 
 export function Scene({ pathPoints, mapData }) {
   const [thirdPerson, setThirdPerson] = useState(false);
@@ -30,10 +30,14 @@ export function Scene({ pathPoints, mapData }) {
       {!thirdPerson && <OrbitControls target={[0, 0, 0]} />}
       <Ground />
       <KmlExtrusions />
-      <RemiAnimated/>
+      
 
-    {mapData && [...Array(50)].map((_, i) => (
+    {mapData && [...Array(10)].map((_, i) => (
+      <>
   <Woman key={i} wid={`W${i}`} mapData={mapData} speed={0.002} />
+   <Remi key={i} wid={`W${i}`} mapData={mapData} speed={0.002} />
+      </>
+  
 ))}
 
 
