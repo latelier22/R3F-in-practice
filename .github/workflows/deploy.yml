@@ -36,7 +36,7 @@ jobs:
 
       - name: 🚀 Deploy build to VPS
         run: |
-          rsync -avz --delete dist/ $VPS_USER@$VPS_HOST:/var/www/sti2d/fiber/
+          rsync -avz --delete build/ $VPS_USER@$VPS_HOST:/var/www/sti2d/fiber/
         env:
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
           VPS_HOST: ${{ secrets.VPS_HOST }}
