@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <title>Carte Réceptrice</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <style>
+    html, body, #map { height: 100%; margin: 0; }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <script>
+    const map = L.map('map').setView([48.2, -2.75], 14);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '&copy; OpenStreetMap'
+    }).addTo(map);
+
+    const ws = new WebSocket('wss://sti2d.latelier22.fr/fiber-ws/');
+    ws.onopen = () => console.log('✅ Connecté au WebSocket');
+    ws.onmessage = e => {
+      const msg = JSON.parse(e.data);
+      if (msg.type === 'target') {
+        const { x, y } = msg.data;
+        console.log('📍 Nouveau point reçu :', x, y);
+        L.marker([x, y]).addTo(map).bindPopup(`(${x.toFixed(4)}, ${y.toFixed(4)})`).openPopup();
+        map.setView([x, y], 15);
+      }
+    };
+  </script>
+</body>
+</html>
