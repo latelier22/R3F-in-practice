@@ -3,11 +3,11 @@ import { Remi } from "./Characters/Remi";
 import { Woman } from "./Characters/Woman";
 import * as THREE from "three";
 
-const MIN_DIST = 0.2;
-const DETECT_RADIUS = 0.6;
-const AVOID_FORCE = 0.1;
-const RETURN_RATE = 0.9;
-const SPEED_RECOVER = 1;
+const MIN_DIST = 0.1;
+const DETECT_RADIUS = 0.5;
+const AVOID_FORCE = 0.9;
+const RETURN_RATE = 1;
+const SPEED_RECOVER = 0.5;
 
 export function CharactersGroup({ mapData, nRemi = 20, nWoman = 20 }) {
   const remiRefs = useRef([]);
