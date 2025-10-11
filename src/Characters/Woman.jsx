@@ -5,7 +5,7 @@ import { useCharacterLogic } from "./useCharacterLogic";
 export const Woman = forwardRef(({ mapData, speed }, ref) => {
   const local = useRef();
   const group = ref || local;
-  const { scene, animations } = useGLTF("/models/woman.glb");
+  const { scene, animations } = useGLTF("/fiber/models/Woman.glb");
   const { cloned, scale } = useCharacterLogic({ model: scene, animations, group, mapData, speed, scale: 0.1 });
 
   return (
@@ -14,4 +14,4 @@ export const Woman = forwardRef(({ mapData, speed }, ref) => {
     </group>
   );
 });
-useGLTF.preload("/models/woman.glb");
+useGLTF.preload("/fiber/models/Woman.glb");

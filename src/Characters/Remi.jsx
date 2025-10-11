@@ -5,7 +5,7 @@ import { useCharacterLogic } from "./useCharacterLogic";
 export const Remi = forwardRef(({ mapData, speed }, ref) => {
   const local = useRef();
   const group = ref || local;
-  const { scene, animations } = useGLTF("/models/Remi.glb");
+  const { scene, animations } = useGLTF("/fiber/models/Remi.glb");
   const { cloned, scale } = useCharacterLogic({ model: scene, animations, group, mapData, speed, scale: 0.05 });
 
   return (
@@ -14,4 +14,4 @@ export const Remi = forwardRef(({ mapData, speed }, ref) => {
     </group>
   );
 });
-useGLTF.preload("/models/Remi.glb");
+useGLTF.preload("/fiber/models/Remi.glb");
