@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import * as THREE from "three";
 import { clone } from "three/examples/jsm/utils/SkeletonUtils.js";
 
@@ -10,33 +10,34 @@ export function useCharacterLogic({ model, animations, group, mapData, speed = 0
   const [points, setPoints] = useState([]);
   const [seg, setSeg] = useState(0);
 
-  // 🎨 Couleurs aléatoires
-
-
   // 🔢 Dijkstra
-  const dijkstra = (a, b) => {
+  const dijkstra = useCallback((a, b) => {
     const N = mapData.nodes, L = mapData.links;
     const dist = {}, prev = {};
     const Q = new Set(N.map(n => n.id));
-    N.forEach(n => dist[n.id] = Infinity);
+    N.forEach(n => (dist[n.id] = Infinity));
     dist[a] = 0;
     while (Q.size) {
-      let u = [...Q].reduce((x, y) => dist[x] < dist[y] ? x : y);
+      let u = [...Q].reduce((x, y) => (dist[x] < dist[y] ? x : y));
       Q.delete(u);
       if (u === b) break;
       L.filter(l => l.from === u || l.to === u).forEach(l => {
         const v = l.from === u ? l.to : l.from;
         if (!Q.has(v)) return;
         const alt = dist[u] + l.dist;
-        if (alt < dist[v]) { dist[v] = alt; prev[v] = u; }
+        if (alt < dist[v]) {
+          dist[v] = alt;
+          prev[v] = u;
+        }
       });
     }
-    const ids = []; for (let u = b; u; u = prev[u]) ids.unshift(u);
+    const ids = [];
+    for (let u = b; u; u = prev[u]) ids.unshift(u);
     return ids;
-  };
+  }, [mapData]);
 
   // 🧭 Itinéraire aléatoire
-  const pickRoute = () => {
+  const pickRoute = useCallback(() => {
     const n = mapData.nodes;
     if (!n?.length) return [];
     const s = n[Math.floor(Math.random() * n.length)].id;
@@ -51,7 +52,7 @@ export function useCharacterLogic({ model, animations, group, mapData, speed = 0
       const node = n.find(nn => nn.id === id);
       return { x: node.x, z: node.z };
     });
-  };
+  }, [mapData, dijkstra]);
 
   // 🕺 Animation + mouvement
   useEffect(() => {
@@ -107,7 +108,7 @@ export function useCharacterLogic({ model, animations, group, mapData, speed = 0
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [animations, mixer, cloned, clock, points, seg, speed]);
+  }, [animations, mixer, cloned, clock, points, seg, speed, group, pickRoute]);
 
   // 🚶 Init route
   useEffect(() => {
@@ -118,7 +119,7 @@ export function useCharacterLogic({ model, animations, group, mapData, speed = 0
       setSeg(0);
       if (group.current) group.current.position.set(pts[0].x, 0, pts[0].z);
     }
-  }, [mapData]);
+  }, [mapData, group, pickRoute]);
 
   return { cloned, scale };
 }
@@ -126,6 +127,10 @@ export function useCharacterLogic({ model, animations, group, mapData, speed = 0
 // projection d’un point sur un segment
 function projectOnSegment(p, a, b) {
   const ab = b.clone().sub(a);
-  const t = THREE.MathUtils.clamp(p.clone().sub(a).dot(ab) / ab.lengthSq(), 0, 1);
+  const t = THREE.MathUtils.clamp(
+    p.clone().sub(a).dot(ab) / ab.lengthSq(),
+    0,
+    1
+  );
   return a.clone().add(ab.multiplyScalar(t));
 }

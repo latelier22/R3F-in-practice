@@ -1,44 +1,38 @@
 import * as THREE from "three";
-import { useEffect } from "react";
+import { useEffect, useCallback, useRef } from "react";
 import { useThree } from "@react-three/fiber";
 import { createGeoConverter } from "./utils/geo";
 
 export function KmlExtrusions({ file = "/lycee.kml", onOrigin }) {
   const { scene } = useThree();
-  let origin = null;
-  let toLocal = null;
 
-  useEffect(() => {
-    fetch(process.env.PUBLIC_URL + file)
-      .then((r) => r.text())
-      .then((text) => parseKML(text));
-  }, [file]);
+  const originRef = useRef(null);
+  const toLocalRef = useRef(null);
 
-  function parseKML(kmlText) {
+  const parseKML = useCallback((kmlText) => {
     const xml = new DOMParser().parseFromString(kmlText, "text/xml");
     const placemarks = xml.querySelectorAll("Placemark");
 
-    // Trouver A (origine)
     placemarks.forEach(pm => {
       const point = pm.querySelector("Point>coordinates");
       const name = pm.querySelector("name")?.textContent?.trim().toUpperCase();
       if (point && name === "A") {
         const [lon, lat] = point.textContent.trim().split(",").map(Number);
-        origin = { lat, lon };
-        toLocal = createGeoConverter(lat, lon, 0.05);
-        onOrigin?.(origin); // callback vers la carte
-        console.log("✅ Origine KML fixée sur A:", origin);
+        originRef.current = { lat, lon };
+        toLocalRef.current = createGeoConverter(lat, lon, 0.05);
+        onOrigin?.(originRef.current);
+        console.log("✅ Origine KML fixée sur A:", originRef.current);
       }
     });
 
     placemarks.forEach(pm => {
       const name = pm.querySelector("name")?.textContent?.toLowerCase() || "";
       const poly = pm.querySelector("Polygon>outerBoundaryIs>LinearRing>coordinates");
-      if (!poly || !toLocal) return;
+      if (!poly || !toLocalRef.current) return;
 
       const coords = poly.textContent.trim().split(/\s+/).map(c => {
         const [lon, lat] = c.split(",").map(Number);
-        return toLocal(lat, lon);
+        return toLocalRef.current(lat, lon);
       });
 
       if (coords.length < 3) return;
@@ -64,10 +58,16 @@ export function KmlExtrusions({ file = "/lycee.kml", onOrigin }) {
         new THREE.MeshStandardMaterial({ color, opacity: 0.85, transparent: true })
       );
       mesh.rotation.x = -Math.PI / 2;
-      mesh.position.y = 0.00;
+      mesh.position.y = 0.0;
       scene.add(mesh);
     });
-  }
+  }, [scene, onOrigin]);
+
+  useEffect(() => {
+    fetch(process.env.PUBLIC_URL + file)
+      .then(r => r.text())
+      .then(text => parseKML(text));
+  }, [file, parseKML]);
 
   return null;
 }

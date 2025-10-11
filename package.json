@@ -2,7 +2,7 @@
   "name": "car-physics",
   "version": "0.1.0",
   "private": true,
-  "homepage": ".",
+  "homepage": "/fiber",
   "dependencies": {
     "@react-three/cannon": "6.4.0",
     "@react-three/drei": "9.34.4",

@@ -198,7 +198,7 @@ export function Map2D({ onPathReady, onMapReady, onNodeSelect }) {
           });
         });
     }
-  }, [onPathReady, onMapReady]);
+  }, [onPathReady, onMapReady,onNodeSelect]);
 
   return <div id="map2d" style={{ width: "100%", height: "100%" }} />;
 }

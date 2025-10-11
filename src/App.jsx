@@ -61,16 +61,7 @@ export default function App() {
     selectedNodeRef.current = id;
   };
 
-  // ✅ bouton APPEL : démarre le trajet actuel
-  const handleAppel = () => {
-    if (selectedNodeRef.current && lastPath) {
-      console.log("🚗 Appel vers", selectedNodeRef.current);
-      setPathPoints(lastPath);
-      window.dispatchEvent(new KeyboardEvent("keydown", { key: " " }));
-    } else {
-      alert("⚠️ Sélectionnez un point sur la carte avant d'appeler le robot !");
-    }
-  };
+
 
   // ✅ bouton RETOUR : refait le trajet inverse
   const handleRetour = () => {
