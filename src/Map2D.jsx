@@ -3,8 +3,6 @@ import "leaflet/dist/leaflet.css";
 import { useEffect, useRef } from "react";
 import { createGeoConverter } from "./utils/geo";
 
-const ALLOW_AUTO_SNAP = false; // si true: affiche un chemin "guide" au plus proche tant que l'utilisateur n'a rien choisi
-
 export function Map2D({ onPathReady, onMapReady, onNodeSelect }) {
   const cbRef = useRef({ onPathReady, onMapReady, onNodeSelect });
   useEffect(() => { cbRef.current = { onPathReady, onMapReady, onNodeSelect }; }, [onPathReady, onMapReady, onNodeSelect]);
@@ -39,6 +37,7 @@ export function Map2D({ onPathReady, onMapReady, onNodeSelect }) {
           wsRef.current = null;
         }
         clearHeartbeat();
+        // Soft reset garantit : aucun marker, aucune sélection après unload
         softReset(window.__map2d);
       };
     });
@@ -46,7 +45,7 @@ export function Map2D({ onPathReady, onMapReady, onNodeSelect }) {
     return () => cleanup();
   }, []);
 
-  // ---------------- WS utils (reconnexion + heartbeat) ----------------
+  // ---------------- Heartbeat / Reco WS ----------------
   function startHeartbeat(ws) {
     const sendPing = () => { try { ws.send(JSON.stringify({ type: "ping", t: Date.now() })); } catch {} };
     wsStateRef.current.hbTimer = setInterval(sendPing, 20000);
@@ -90,9 +89,11 @@ export function Map2D({ onPathReady, onMapReady, onNodeSelect }) {
     };
   }
 
-  // ---------------- SOFT RESET ----------------
+  // ---------------- SOFT RESET : aucun marker, aucune sélection ----------------
   function softReset(map) {
     if (!map) return;
+
+    // Supprimer nos couches et marqueurs
     if (map.__pathsByWoman) {
       Object.values(map.__pathsByWoman).forEach(l => { try { map.removeLayer(l); } catch {} });
       map.__pathsByWoman = {};
@@ -100,10 +101,11 @@ export function Map2D({ onPathReady, onMapReady, onNodeSelect }) {
     if (map.__lastPathLayer) { try { map.removeLayer(map.__lastPathLayer); } catch {} map.__lastPathLayer = null; }
     if (map.__robotMarker) { try { map.removeLayer(map.__robotMarker); } catch {} map.__robotMarker = null; }
 
+    // Désabonner events posés
     try { map.off(); } catch {}
 
+    // Réinitialiser *entièrement* l'état session
     map.__selectedNode = null;
-    map.__userSelected = false;
     map.__allNodes = [];
     map.__allLinks = [];
     map.__obstacles = [];
@@ -111,6 +113,7 @@ export function Map2D({ onPathReady, onMapReady, onNodeSelect }) {
     map.__originA = null;
     map.__toLocal = null;
 
+    // Helper globaux nettoyés
     delete window.map2D_drawByNodeIds;
     delete window.callAppelFromButton;
   }
@@ -125,14 +128,15 @@ export function Map2D({ onPathReady, onMapReady, onNodeSelect }) {
         attribution: "© OSM France", maxZoom: 20,
       }).addTo(map);
     } else {
+      // Réutilisation sans flicker, mais remise à zéro stricte
       softReset(map);
     }
 
+    // États de session (vides au reload)
     map.__pathsByWoman = map.__pathsByWoman || {};
-    map.__selectedNode = null;
-    map.__userSelected = false;
+    map.__selectedNode = null;   // ← aucune sélection au départ
     map.__lastPathLayer = null;
-    map.__robotMarker = null;
+    map.__robotMarker = null;    // ← aucun marker au départ
 
     map.__allNodes = [];
     map.__allLinks = [];
@@ -144,8 +148,8 @@ export function Map2D({ onPathReady, onMapReady, onNodeSelect }) {
     const allNodes = map.__allNodes;
     const allLinks = map.__allLinks;
     const obstacles = map.__obstacles;
-    const extrusionsData = map.__extrusionsData;
 
+    // Helper : dessiner un chemin par ids pour une “woman”
     window.map2D_drawByNodeIds = (wid, nodeIds, color = "#c03") => {
       if (!nodeIds || nodeIds.length < 2) return;
       if (map.__pathsByWoman[wid]) {
@@ -161,6 +165,7 @@ export function Map2D({ onPathReady, onMapReady, onNodeSelect }) {
 
     const nodeName = (i) => { let s = ""; while (i >= 0) { s = String.fromCharCode(65 + (i % 26)) + s; i = Math.floor(i / 26) - 1; } return s; };
 
+    // Charger KML → points (noeuds) + polygones (obstacles)
     fetch(process.env.PUBLIC_URL + "/lycee.kml")
       .then(r => r.text())
       .then(txt => {
@@ -172,6 +177,7 @@ export function Map2D({ onPathReady, onMapReady, onNodeSelect }) {
           const point = pm.querySelector("Point>coordinates");
           const poly = pm.querySelector("Polygon>outerBoundaryIs>LinearRing>coordinates");
 
+          // Noeuds
           if (point) {
             const [lon, lat] = point.textContent.trim().split(",").map(Number);
             const id = nodeName(allNodes.length);
@@ -184,8 +190,8 @@ export function Map2D({ onPathReady, onMapReady, onNodeSelect }) {
             }).addTo(map);
             marker.bindTooltip(id);
             marker.on("click", () => {
+              // Sélection explicite par l’utilisateur
               map.__selectedNode = id;
-              map.__userSelected = true; // <-- sélection par l’utilisateur
               const path = dijkstra("A", id);
               highlightRobotPath(path);
               cbRef.current.onNodeSelect && cbRef.current.onNodeSelect(id);
@@ -193,20 +199,21 @@ export function Map2D({ onPathReady, onMapReady, onNodeSelect }) {
             allNodes.push({ id, lat, lon });
           }
 
+          // Obstacles
           if (poly) {
             const coords = poly.textContent.trim().split(/\s+/).map(c => {
               const [lon, lat] = c.split(",").map(Number);
               return [lat, lon];
             });
-            let color = "gray", fill = "lightgray", type = "autre";
-            if (name === "" || name.toLowerCase().includes("sans titre")) { color = "green"; fill = "lightgreen"; type = "pelouse"; }
-            else if (name.toLowerCase().includes("bat")) { color = "blue"; fill = "lightblue"; type = "bat"; }
+            let color = "gray", fill = "lightgray";
+            if (name === "" || name.toLowerCase().includes("sans titre")) { color = "green"; fill = "lightgreen"; }
+            else if (name.toLowerCase().includes("bat")) { color = "blue"; fill = "lightblue"; }
             L.polygon(coords, { color, fillColor: fill, fillOpacity: 0.5 }).addTo(map);
             obstacles.push(coords);
-            extrusionsData.push({ coords, type });
           }
         });
 
+        // Liaisons (sans traverser les obstacles)
         for (let i = 0; i < allNodes.length; i++) {
           for (let j = i + 1; j < allNodes.length; j++) {
             const n1 = allNodes[i], n2 = allNodes[j];
@@ -222,6 +229,7 @@ export function Map2D({ onPathReady, onMapReady, onNodeSelect }) {
           }
         }
 
+        // ---- Dijkstra
         function dijkstra(start, end) {
           const dist = {}, prev = {}, Q = new Set(allNodes.map(n => n.id));
           allNodes.forEach(n => dist[n.id] = Infinity);
@@ -242,6 +250,7 @@ export function Map2D({ onPathReady, onMapReady, onNodeSelect }) {
           return path;
         }
 
+        // ---- Tracé du chemin
         function highlightRobotPath(path) {
           if (map.__lastPathLayer) { try { map.removeLayer(map.__lastPathLayer); } catch {} map.__lastPathLayer = null; }
           if (!path.length) return;
@@ -252,6 +261,7 @@ export function Map2D({ onPathReady, onMapReady, onNodeSelect }) {
           map.__lastPathLayer = L.polyline(latlngs, { color: "orange", weight: 4 }).addTo(map);
         }
 
+        // ---- Outil nearest
         const findNearestNode = (lat, lon) => {
           let nearest = null, min = Infinity;
           allNodes.forEach(n => {
@@ -261,11 +271,12 @@ export function Map2D({ onPathReady, onMapReady, onNodeSelect }) {
           return nearest;
         };
 
-        // WS: on ne sélectionne JAMAIS depuis la socket.
+        // ---- WebSocket : AU RECEPTION D'UN TARGET → recréer marker + auto-sélection “comme avant”
         connectWS((msg) => {
           if (msg.type === "target") {
             const { x: lat, y: lon } = msg.data;
 
+            // (Re)crée le marker au besoin (après reload, il n’existe pas)
             if (!map.__robotMarker) {
               map.__robotMarker = L.marker([lat, lon], {
                 icon: L.icon({
@@ -278,14 +289,18 @@ export function Map2D({ onPathReady, onMapReady, onNodeSelect }) {
               map.__robotMarker.setLatLng([lat, lon]);
             }
 
-            // Optionnel: affichage guide sans sélectionner
-            if (ALLOW_AUTO_SNAP && !map.__userSelected) {
-              const nearest = findNearestNode(lat, lon);
-              if (nearest) highlightRobotPath(dijkstra("A", nearest.id));
+            // “Comme avant” : déterminer le noeud le plus proche + chemin + sélection + tracé
+            const nearest = findNearestNode(lat, lon);
+            if (nearest) {
+              map.__selectedNode = nearest.id;              // ← sélection automatique
+              const path = dijkstra("A", nearest.id);
+              highlightRobotPath(path);
+              cbRef.current.onNodeSelect && cbRef.current.onNodeSelect(nearest.id);
             }
           }
         });
 
+        // Notifier 3D quand prêt
         if (cbRef.current.onMapReady && map.__originA && map.__toLocal) {
           cbRef.current.onMapReady({
             nodes: allNodes.map(n => {
