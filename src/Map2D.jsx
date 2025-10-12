@@ -3,6 +3,50 @@ import { useEffect } from "react";
 import { createGeoConverter } from "./utils/geo";
 
 export function Map2D({ onPathReady, onMapReady, onNodeSelect }) {
+
+// --- Connexion WebSocket pour position robot ---
+useEffect(() => {
+  const ws = new WebSocket('wss://sti2d.latelier22.fr/fiber-ws/')
+  let robotMarker = null
+
+  ws.onopen = () => console.log('✅ WebSocket connecté (Map2D)')
+  ws.onmessage = e => {
+    const msg = JSON.parse(e.data)
+    if (msg.type === 'target') {
+      const { x: lat, y: lon } = msg.data
+      console.log('📡 Position reçue du robot :', lat, lon)
+
+      // on attend que la carte soit initialisée
+      const map = window.__map2d
+      if (!map) return
+
+      // crée le marqueur si pas encore là
+      if (!robotMarker) {
+        robotMarker = L.marker([lat, lon], {
+          icon: L.icon({
+            iconUrl: 'https://cdn-icons-png.flaticon.com/512/3448/3448594.png',
+            iconSize: [32, 32],
+            iconAnchor: [16, 16]
+          })
+        }).addTo(map)
+      } else {
+        // déplace le marqueur existant
+        robotMarker.setLatLng([lat, lon])
+      }
+
+      // centre la vue sur le robot
+      map.setView([lat, lon], map.getZoom())
+    }
+  }
+
+  ws.onerror = err => console.error('❌ Erreur WebSocket Map2D:', err)
+  ws.onclose = () => console.warn('🔌 WebSocket fermé')
+
+  return () => ws.close()
+}, [])
+
+
+
   useEffect(() => {
     const ensureLibs = async () => {
       const needL = !window.L;
