@@ -195,11 +195,13 @@ export function Map2D({ onPathReady, onMapReady, onNodeSelect }) {
               })
 
               if (nearest) {
-                console.log(`🎯 Nœud le plus proche : ${nearest.id} (${(minDist*1000).toFixed(2)} m)`)
-                const path = dijkstra("A", nearest.id)
-                highlightRobotPath(path)
-                onNodeSelect && onNodeSelect(nearest.id)
-              }
+  console.log(`🎯 Nœud le plus proche : ${nearest.id} (${(minDist*1000).toFixed(2)} m)`)
+  selectedNode = nearest.id; // ✅ on met à jour la sélection active
+  const path = dijkstra("A", nearest.id)
+  highlightRobotPath(path)
+  onNodeSelect && onNodeSelect(nearest.id)
+}
+
             }
           }
 
