@@ -4,14 +4,13 @@ import { useEffect, useRef } from "react";
 import { createGeoConverter } from "./utils/geo";
 
 export function Map2D({ onPathReady, onMapReady, onNodeSelect }) {
-  // refs pour toujours avoir la dernière version des callbacks sans relancer l'effet
+  // refs pour garder les callbacks à jour sans relancer l’effet principal
   const cbRef = useRef({ onPathReady, onMapReady, onNodeSelect });
   useEffect(() => {
     cbRef.current = { onPathReady, onMapReady, onNodeSelect };
   }, [onPathReady, onMapReady, onNodeSelect]);
 
   const wsRef = useRef(null);
-  const robotMarkerRef = useRef(null);
 
   useEffect(() => {
     const ensureLibs = async () => {
@@ -33,65 +32,105 @@ export function Map2D({ onPathReady, onMapReady, onNodeSelect }) {
 
     let cleanup = () => {};
     ensureLibs().then(() => {
-      // ⚠️ ne plus détruire/recréer si déjà initialisée (évite le clignotement)
-      if (window.__map2d) {
-        // carte déjà créée (ex: StrictMode), on ne fait rien
-        return;
-      }
+      const reuse = !!window.__map2d;
+      init(window.L, window.turf, reuse);
 
-      init(window.L, window.turf);
       cleanup = () => {
-        // fermeture WS quand le composant est démonté
+        // Fermer proprement la WebSocket
         if (wsRef.current) {
           try { wsRef.current.close(); } catch {}
           wsRef.current = null;
         }
-        // on peut laisser la carte vivre si tu navigues dans l’app
-        // sinon, pour forcer cleanup total :
-        // if (window.__map2d) { window.__map2d.remove(); delete window.__map2d; }
+        // Soft reset (on garde la carte → pas de flicker)
+        softReset(window.__map2d);
       };
     });
 
     return () => cleanup();
-  // 👇 important: initialiser UNE SEULE FOIS
-  }, []);
+  }, []); // init une seule fois
 
-  function init(L, turf) {
-    const map = L.map("map2d", { preferCanvas: true }).setView([48.185, -2.758], 19);
-    window.__map2d = map;
+  // ---- SOFT RESET : on garde le fond de plan / la map, mais on efface notre session
+  function softReset(map) {
+    if (!map) return;
+    // Supprimer nos couches (tracés par woman, dernier chemin, robot)
+    if (map.__pathsByWoman) {
+      Object.values(map.__pathsByWoman).forEach(l => { try { map.removeLayer(l); } catch {} });
+      map.__pathsByWoman = {};
+    }
+    if (map.__lastPathLayer) { try { map.removeLayer(map.__lastPathLayer); } catch {} map.__lastPathLayer = null; }
+    if (map.__robotMarker) { try { map.removeLayer(map.__robotMarker); } catch {} map.__robotMarker = null; }
 
-    L.tileLayer("https://{s}.tile.openstreetmap.fr/osmfr/{z}/{x}/{y}.png", {
-      attribution: "© OSM France", maxZoom: 20,
-    }).addTo(map);
+    // Désabonner les events qu’on aurait posés (évite doublons)
+    try { map.off(); } catch {}
 
-    let allNodes = [], allLinks = [], obstacles = [], extrusionsData = [];
-    let selectedNode = null;
-    let originA = null;
-    let toLocal = null;
-    let lastPathLayer = null;
+    // Réinitialiser les états de session
+    map.__selectedNode = null;
+    map.__allNodes = [];
+    map.__allLinks = [];
+    map.__obstacles = [];
+    map.__extrusionsData = [];
+    map.__originA = null;
+    map.__toLocal = null;
 
-    const pathLayersByWoman = {};
-    map.__pathsByWoman = pathLayersByWoman;
+    // Nettoyage des helpers globaux éventuels
+    delete window.map2D_drawByNodeIds;
+    delete window.callAppelFromButton;
+  }
 
+  function init(L, turf, reuse = false) {
+    let map = window.__map2d;
+    if (!reuse || !map) {
+      map = L.map("map2d", { preferCanvas: true }).setView([48.185, -2.758], 19);
+      window.__map2d = map;
+
+      L.tileLayer("https://{s}.tile.openstreetmap.fr/osmfr/{z}/{x}/{y}.png", {
+        attribution: "© OSM France", maxZoom: 20,
+      }).addTo(map);
+    } else {
+      // Si on réutilise la carte existante → soft reset pour repartir propre
+      softReset(map);
+    }
+
+    // États de session portés par la map (persistants entre renders, mais reset au refresh)
+    map.__pathsByWoman = map.__pathsByWoman || {};
+    map.__selectedNode = null;
+    map.__lastPathLayer = null;
+    map.__robotMarker = null;
+
+    map.__allNodes = [];
+    map.__allLinks = [];
+    map.__obstacles = [];
+    map.__extrusionsData = [];
+    map.__originA = null;
+    map.__toLocal = null;
+
+    const allNodes = map.__allNodes;
+    const allLinks = map.__allLinks;
+    const obstacles = map.__obstacles;
+    const extrusionsData = map.__extrusionsData;
+
+    // Helper global (dessin d’un chemin par ids pour une “woman”)
     window.map2D_drawByNodeIds = (wid, nodeIds, color = "#c03") => {
       if (!nodeIds || nodeIds.length < 2) return;
-      if (pathLayersByWoman[wid]) {
-        map.removeLayer(pathLayersByWoman[wid]);
-        delete pathLayersByWoman[wid];
+      if (map.__pathsByWoman[wid]) {
+        map.removeLayer(map.__pathsByWoman[wid]);
+        delete map.__pathsByWoman[wid];
       }
       const latlngs = nodeIds.map(id => {
         const n = allNodes.find(nn => nn.id === id);
         return [n.lat, n.lon];
       });
-      pathLayersByWoman[wid] = L.polyline(latlngs, { color, weight: 4, opacity: 0.8 }).addTo(map);
+      map.__pathsByWoman[wid] = L.polyline(latlngs, { color, weight: 4, opacity: 0.8 }).addTo(map);
     };
 
+    // Nommer les noeuds A, B, C, ... Z, AA, AB, ...
     const nodeName = (i) => {
       let s = "";
       while (i >= 0) { s = String.fromCharCode(65 + (i % 26)) + s; i = Math.floor(i / 26) - 1; }
       return s;
     };
 
+    // --- Charger KML et construire le graphe
     fetch(process.env.PUBLIC_URL + "/lycee.kml")
       .then(r => r.text())
       .then(txt => {
@@ -107,8 +146,8 @@ export function Map2D({ onPathReady, onMapReady, onNodeSelect }) {
             const [lon, lat] = point.textContent.trim().split(",").map(Number);
             const id = nodeName(allNodes.length);
             if (id === "A") {
-              originA = { lat, lon };
-              toLocal = createGeoConverter(lat, lon, 0.05);
+              map.__originA = { lat, lon };
+              map.__toLocal = createGeoConverter(lat, lon, 0.05);
             }
 
             const marker = L.circleMarker([lat, lon], {
@@ -116,7 +155,7 @@ export function Map2D({ onPathReady, onMapReady, onNodeSelect }) {
             }).addTo(map);
             marker.bindTooltip(id);
             marker.on("click", () => {
-              selectedNode = id;
+              map.__selectedNode = id;
               const path = dijkstra("A", id);
               highlightRobotPath(path);
               cbRef.current.onNodeSelect && cbRef.current.onNodeSelect(id);
@@ -143,7 +182,7 @@ export function Map2D({ onPathReady, onMapReady, onNodeSelect }) {
           }
         });
 
-        // Graphe des liaisons
+        // Liaisons du graphe (toutes paires valides, pas d’intersection avec obstacles)
         for (let i = 0; i < allNodes.length; i++) {
           for (let j = i + 1; j < allNodes.length; j++) {
             const n1 = allNodes[i], n2 = allNodes[j];
@@ -159,7 +198,7 @@ export function Map2D({ onPathReady, onMapReady, onNodeSelect }) {
           }
         }
 
-        // Dijkstra
+        // --- Dijkstra
         function dijkstra(start, end) {
           const dist = {}, prev = {}, Q = new Set(allNodes.map(n => n.id));
           allNodes.forEach(n => dist[n.id] = Infinity);
@@ -180,43 +219,44 @@ export function Map2D({ onPathReady, onMapReady, onNodeSelect }) {
           return path;
         }
 
+        // --- Highlight chemin robot
         function highlightRobotPath(path) {
-          if (lastPathLayer) {
-            map.removeLayer(lastPathLayer);
-            lastPathLayer = null;
+          if (map.__lastPathLayer) {
+            try { map.removeLayer(map.__lastPathLayer); } catch {}
+            map.__lastPathLayer = null;
           }
           if (!path.length) return;
           const latlngs = path.map(id => {
             const n = allNodes.find(nn => nn.id === id);
             return [n.lat, n.lon];
           });
-          lastPathLayer = L.polyline(latlngs, { color: "orange", weight: 4 }).addTo(map);
+          map.__lastPathLayer = L.polyline(latlngs, { color: "orange", weight: 4 }).addTo(map);
         }
 
-        // WebSocket (une seule fois, pas de recréation)
-        const ws = new WebSocket('wss://sti2d.latelier22.fr/fiber-ws/');
+        // --- WebSocket (une seule fois par session UI)
+        const ws = new WebSocket("wss://sti2d.latelier22.fr/fiber-ws/");
         wsRef.current = ws;
 
-        ws.onopen = () => console.log('✅ WebSocket connecté (Map2D)');
+        ws.onopen = () => console.log("✅ WebSocket connecté (Map2D)");
         ws.onmessage = e => {
           const msg = JSON.parse(e.data);
-          if (msg.type === 'target') {
+          if (msg.type === "target") {
             const { x: lat, y: lon } = msg.data;
 
-            // crée / déplace le marker
-            if (!robotMarkerRef.current) {
-              robotMarkerRef.current = L.marker([lat, lon], {
+            // Crée / déplace le marker robot
+            if (!map.__robotMarker) {
+              map.__robotMarker = L.marker([lat, lon], {
                 icon: L.icon({
-                  iconUrl: 'https://cdn-icons-png.flaticon.com/512/3448/3448594.png',
+                  iconUrl: "https://cdn-icons-png.flaticon.com/512/3448/3448594.png",
                   iconSize: [32, 32],
-                  iconAnchor: [16, 16]
+                  iconAnchor: [16, 16],
                 })
               }).addTo(map);
             } else {
-              robotMarkerRef.current.setLatLng([lat, lon]);
+              map.__robotMarker.setLatLng([lat, lon]);
             }
 
-            // nœud le plus proche
+            // Nœud le plus proche
             let nearest = null, minDist = Infinity;
             allNodes.forEach(n => {
               const d = turf.distance([lon, lat], [n.lon, n.lat]);
@@ -224,7 +264,7 @@ export function Map2D({ onPathReady, onMapReady, onNodeSelect }) {
             });
 
             if (nearest) {
-              selectedNode = nearest.id; // état logique courant
+              map.__selectedNode = nearest.id;
               const path = dijkstra("A", nearest.id);
               highlightRobotPath(path);
               cbRef.current.onNodeSelect && cbRef.current.onNodeSelect(nearest.id);
@@ -232,36 +272,40 @@ export function Map2D({ onPathReady, onMapReady, onNodeSelect }) {
           }
         };
 
-        ws.onerror = err => console.error('❌ Erreur WebSocket Map2D:', err);
-        ws.onclose = () => console.warn('🔌 WebSocket fermé');
+        ws.onerror = err => console.error("❌ Erreur WebSocket Map2D:", err);
+        ws.onclose = () => console.warn("🔌 WebSocket fermé");
 
-        // notify 3D quand prêt
-        if (cbRef.current.onMapReady && originA && toLocal) {
+        // --- Notifier la 3D quand le graphe est prêt
+        if (cbRef.current.onMapReady && map.__originA && map.__toLocal) {
           cbRef.current.onMapReady({
             nodes: allNodes.map(n => {
-              const v = toLocal(n.lat, n.lon);
+              const v = map.__toLocal(n.lat, n.lon);
               return { id: n.id, x: v.x, z: -v.y };
             }),
             links: allLinks
           });
         }
 
+        // Conversion d’un id de nœud vers coords 3D locales
         function nodeTo3D(id) {
           const n = allNodes.find(nn => nn.id === id);
-          if (!n || !toLocal) return { x: 0, z: 0 };
-          const v = toLocal(n.lat, n.lon);
+          if (!n || !map.__toLocal) return { x: 0, z: 0 };
+          const v = map.__toLocal(n.lat, n.lon);
           return { x: v.x, z: -v.y };
         }
 
+        // Déclenche l’envoi du chemin A→selected vers la 3D
         function triggerAppel() {
-          if (selectedNode) {
-            const ids = dijkstra("A", selectedNode);
+          if (map.__selectedNode) {
+            const ids = dijkstra("A", map.__selectedNode);
             const path3D = ids.map(id => nodeTo3D(id));
             cbRef.current.onPathReady && cbRef.current.onPathReady(path3D);
           } else {
             alert("⚠️ Aucun nœud sélectionné !");
           }
         }
+
+        // Helpers globaux (facultatif)
         window.callAppelFromButton = triggerAppel;
         window.addEventListener("keydown", (e) => {
           if ((e.code === "Space" || e.key === " ")) triggerAppel();
