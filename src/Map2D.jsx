@@ -1,54 +1,9 @@
+/* global L, turf */
 import "leaflet/dist/leaflet.css";
 import { useEffect } from "react";
 import { createGeoConverter } from "./utils/geo";
 
 export function Map2D({ onPathReady, onMapReady, onNodeSelect }) {
-
-/* global L, turf */
-
-// --- Connexion WebSocket pour position robot ---
-useEffect(() => {
-  const ws = new WebSocket('wss://sti2d.latelier22.fr/fiber-ws/')
-  let robotMarker = null
-
-  ws.onopen = () => console.log('✅ WebSocket connecté (Map2D)')
-  ws.onmessage = e => {
-    const msg = JSON.parse(e.data)
-    if (msg.type === 'target') {
-      const { x: lat, y: lon } = msg.data
-      console.log('📡 Position reçue du robot :', lat, lon)
-
-      // on attend que la carte soit initialisée
-      const map = window.__map2d
-      if (!map) return
-
-      // crée le marqueur si pas encore là
-      if (!robotMarker) {
-        robotMarker = L.marker([lat, lon], {
-          icon: L.icon({
-            iconUrl: 'https://cdn-icons-png.flaticon.com/512/3448/3448594.png',
-            iconSize: [32, 32],
-            iconAnchor: [16, 16]
-          })
-        }).addTo(map)
-      } else {
-        // déplace le marqueur existant
-        robotMarker.setLatLng([lat, lon])
-      }
-
-      // centre la vue sur le robot
-      map.setView([lat, lon], map.getZoom())
-    }
-  }
-
-  ws.onerror = err => console.error('❌ Erreur WebSocket Map2D:', err)
-  ws.onclose = () => console.warn('🔌 WebSocket fermé')
-
-  return () => ws.close()
-}, [])
-
-
-
   useEffect(() => {
     const ensureLibs = async () => {
       const needL = !window.L;
@@ -85,14 +40,11 @@ useEffect(() => {
       let toLocal = null;
       let lastPathLayer = null;
 
-      // stocke les polylignes par femme
       const pathLayersByWoman = {};
       map.__pathsByWoman = pathLayersByWoman;
 
-      // API publique pour dessiner un trajet depuis une liste d'IDs
       window.map2D_drawByNodeIds = (wid, nodeIds, color = "#c03") => {
         if (!nodeIds || nodeIds.length < 2) return;
-        // Efface la précédente
         if (pathLayersByWoman[wid]) {
           map.removeLayer(pathLayersByWoman[wid]);
           delete pathLayersByWoman[wid];
@@ -126,7 +78,6 @@ useEffect(() => {
               const id = nodeName(allNodes.length);
               if (id === "A") {
                 originA = { lat, lon };
-                // IMPORTANT : même conversion que KmlExtrusions/Car → z = -y
                 toLocal = createGeoConverter(lat, lon, 0.05);
               }
 
@@ -162,7 +113,7 @@ useEffect(() => {
             }
           });
 
-          // Liaisons autorisées uniquement (même logique que la voiture)
+          // --- Construction du graphe des liaisons ---
           for (let i = 0; i < allNodes.length; i++) {
             for (let j = i + 1; j < allNodes.length; j++) {
               const n1 = allNodes[i], n2 = allNodes[j];
@@ -178,6 +129,7 @@ useEffect(() => {
             }
           }
 
+          // --- Dijkstra ---
           function dijkstra(start, end) {
             const dist = {}, prev = {}, Q = new Set(allNodes.map(n => n.id));
             allNodes.forEach(n => dist[n.id] = Infinity);
@@ -211,24 +163,67 @@ useEffect(() => {
             lastPathLayer = L.polyline(latlngs, { color: "orange", weight: 4 }).addTo(map);
           }
 
-          // Push vers la 3D : nœuds en repère 3D (x, z = -y), + liens filtrés
+          // --- 🔌 WebSocket pour réception robot ---
+          const ws = new WebSocket('wss://sti2d.latelier22.fr/fiber-ws/')
+          let robotMarker = null
+          ws.onopen = () => console.log('✅ WebSocket connecté (Map2D)')
+
+          ws.onmessage = e => {
+            const msg = JSON.parse(e.data)
+            if (msg.type === 'target') {
+              const { x: lat, y: lon } = msg.data
+              console.log('📡 Position reçue du robot :', lat, lon)
+
+              // crée / déplace le marqueur
+              if (!robotMarker) {
+                robotMarker = L.marker([lat, lon], {
+                  icon: L.icon({
+                    iconUrl: 'https://cdn-icons-png.flaticon.com/512/3448/3448594.png',
+                    iconSize: [32, 32],
+                    iconAnchor: [16, 16]
+                  })
+                }).addTo(map)
+              } else {
+                robotMarker.setLatLng([lat, lon])
+              }
+
+              // cherche le nœud le plus proche
+              let nearest = null, minDist = Infinity
+              allNodes.forEach(n => {
+                const d = turf.distance([lon, lat], [n.lon, n.lat])
+                if (d < minDist) { minDist = d; nearest = n }
+              })
+
+              if (nearest) {
+                console.log(`🎯 Nœud le plus proche : ${nearest.id} (${(minDist*1000).toFixed(2)} m)`)
+                const path = dijkstra("A", nearest.id)
+                highlightRobotPath(path)
+                onNodeSelect && onNodeSelect(nearest.id)
+              }
+            }
+          }
+
+          ws.onerror = err => console.error('❌ Erreur WebSocket Map2D:', err)
+          ws.onclose = () => console.warn('🔌 WebSocket fermé')
+
+          // --- Push vers la 3D ---
           if (onMapReady && originA && toLocal) {
             onMapReady({
               nodes: allNodes.map(n => {
-                const v = toLocal(n.lat, n.lon); // {x, y}
-                return { id: n.id, x: v.x, z: -v.y }; // repère 3D
+                const v = toLocal(n.lat, n.lon);
+                return { id: n.id, x: v.x, z: -v.y };
               }),
               links: allLinks
             });
           }
 
-          // Appel depuis bouton APPEL (voitue)
           function nodeTo3D(id) {
             const n = allNodes.find(nn => nn.id === id);
             if (!n || !toLocal) return { x: 0, z: 0 };
             const v = toLocal(n.lat, n.lon);
             return { x: v.x, z: -v.y };
           }
+
           function triggerAppel() {
             if (selectedNode) {
               const ids = dijkstra("A", selectedNode);
@@ -244,7 +239,7 @@ useEffect(() => {
           });
         });
     }
-  }, [onPathReady, onMapReady,onNodeSelect]);
+  }, [onPathReady, onMapReady, onNodeSelect]);
 
   return <div id="map2d" style={{ width: "100%", height: "100%" }} />;
 }
