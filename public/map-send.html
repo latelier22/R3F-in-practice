@@ -2,132 +2,186 @@
 <html lang="fr">
 <head>
   <meta charset="UTF-8" />
-  <title>Carte Émettrice</title>
+  <title>KML: zoom & point aléatoire dans "limites"</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/@turf/turf@6/turf.min.js"></script>
   <style>
     html, body, #map { height: 100%; margin: 0; }
-    #btn-appel {
-      position: fixed; right: 14px; top: 14px; z-index: 1000;
-      background: #ffefef; border: 2px solid #c00; color: #900;
-      font-weight: 800; padding: 10px 14px; border-radius: 12px; cursor: pointer;
-      box-shadow: 0 2px 10px rgba(0,0,0,0.15);
+    .tools {
+      position: fixed; right: 12px; top: 12px; z-index: 1000; display: grid; gap: 8px;
     }
+    .btn {
+      background: #fff; border: 1px solid #bbb; border-radius: 10px;
+      padding: 10px 14px; font-weight: 700; cursor: pointer; box-shadow: 0 2px 10px rgba(0,0,0,.15);
+    }
+    .btn:disabled { opacity: .5; cursor: not-allowed; }
+    .btn.alert { background: #ffefef; border-color: #c00; color: #900; }
   </style>
 </head>
 <body>
   <div id="map"></div>
-  <button id="btn-appel" title="Déclencher l'appel robot">🚨 APPEL ROBOT</button>
+  <div class="tools">
+    <button id="fit" class="btn">🗺️ Zoom "limites"</button>
+    <button id="rand" class="btn">🎯 Point aléatoire dans "limites"</button>
+    <button id="appel" class="btn alert" disabled>🚨 APPEL ROBOT</button>
+  </div>
 
-  <script>
-    // ---- Leaflet ----
-    const map = L.map('map').setView([48.2, -2.75], 14);
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '&copy; OpenStreetMap' }).addTo(map);
+<script>
+const KML_URL = 'lycee.kml'; // <-- adapte si besoin
+// (Optionnel) endpoints si tu veux envoyer l'appel
+const WS_URL  = 'wss://sti2d.latelier22.fr/fiber-ws/';
+const API_URL = 'https://sti2d.latelier22.fr/fiber/api/call-robot';
 
-    let marker = null;
-    let pendingTarget = null; // position choisie mais pas encore envoyée
+const map = L.map('map', { preferCanvas:true }).setView([48.185, -2.758], 18);
+L.tileLayer('https://{s}.tile.openstreetmap.fr/osmfr/{z}/{x}/{y}.png', {
+  attribution: '© OSM France', maxZoom: 20
+}).addTo(map);
 
-    // Clic sur la carte : positionne le MARQUEUR (mais n’envoie rien tant qu’on n’a pas confirmé l'appel)
-    map.on('click', e => {
-      const { lat, lng } = e.latlng;
-      pendingTarget = { x: lat, y: lng, time: Date.now() };
+let limitesPoly = null;        // turf.polygon (le vrai “limites”)
+let limitesLayer = null;       // Layer Leaflet
+let limitesBounds = null;      // L.LatLngBounds du polygone
+let marker = null;             // Marker choisi
+let chosen = null;             // { x:lat, y:lng, time }
 
-      if (marker) map.removeLayer(marker);
-      marker = L.marker([lat, lng]).addTo(map);
-      console.log("📍 Position prête (en attente de confirmation) :", pendingTarget);
-    });
+const btnFit   = document.getElementById('fit');
+const btnRand  = document.getElementById('rand');
+const btnAppel = document.getElementById('appel');
 
-    // ---- WebSocket client (pour diffuser type:"appel") ----
-    const WS_URL = "wss://sti2d.latelier22.fr/fiber-ws/";
-    let ws = null, wsRetry = 0, hbTimer = null, idleTimer = null;
+// ---------------- Parse KML & trouver le Placemark name == "limites" ----------------
+fetch(KML_URL).then(r => r.text()).then(kmlText => {
+  const xml = new DOMParser().parseFromString(kmlText, "text/xml");
+  const placemarks = [...xml.querySelectorAll('Placemark')];
 
-    function wsConnect() {
-      if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
-      ws = new WebSocket(WS_URL);
+  const limPm = placemarks.find(pm => {
+    const name = pm.querySelector('name')?.textContent?.trim() || '';
+    return name.toLowerCase() === 'limites';
+  });
 
-      ws.onopen = () => {
-        console.log("✅ WS ouverte");
-        wsRetry = 0;
-        try { ws.send(JSON.stringify({ type: "hello", client: "emetteur-map" })); } catch {}
-        startHeartbeat();
-      };
+  if (!limPm) {
+    alert('Aucun Placemark nommé "limites" dans le KML.');
+    return;
+  }
 
-      ws.onmessage = (e) => {
-        // Ici on n’a rien de particulier à recevoir (la carte émet)
-        resetIdleTimer();
-      };
+  // Support Polygon ou MultiGeometry>Polygon
+  const polys = [...limPm.querySelectorAll('Polygon')];
+  if (!polys.length) {
+    alert('Le Placemark "limites" ne contient pas de <Polygon>.');
+    return;
+  }
 
-      ws.onerror = (err) => console.warn("❌ WS erreur", err);
+  // On ne garde que l’outerBoundary du 1er polygon (si plusieurs, on peut les fusionner — ici on prend le premier)
+  const ringNode = polys[0].querySelector('outerBoundaryIs > LinearRing > coordinates');
+  if (!ringNode) {
+    alert('Polygon "limites": pas de LinearRing outerBoundary.');
+    return;
+  }
 
-      ws.onclose = () => {
-        console.warn("🔌 WS fermée");
-        stopHeartbeat();
-        const backoff = Math.min(10000, 500 * Math.pow(2, wsRetry++));
-        setTimeout(wsConnect, backoff);
-      };
+  // KML: "lon,lat[,alt] lon,lat ..."
+  const coordsLonLat = ringNode.textContent.trim().split(/\s+/).map(pair => {
+    const [lon, lat] = pair.split(',').map(Number);
+    return [lon, lat];
+  });
+  // fermer l’anneau si ce n’est pas déjà le cas
+  const f = coordsLonLat[0], l = coordsLonLat[coordsLonLat.length-1];
+  if (!l || f[0] !== l[0] || f[1] !== l[1]) coordsLonLat.push([f[0], f[1]]);
+
+  limitesPoly = turf.polygon([coordsLonLat]);
+
+  // Dessin Leaflet (conversion en [lat,lng])
+  const coordsLatLng = coordsLonLat.map(([lon, lat]) => [lat, lon]);
+  limitesLayer = L.polygon(coordsLatLng, { color:'#0a7', weight:2, fillColor:'#0f7', fillOpacity:.15 }).addTo(map);
+
+  // Bounds exactes du polygone
+  limitesBounds = L.latLngBounds(coordsLatLng);
+  map.fitBounds(limitesBounds, { padding:[30,30] });
+
+  // Active les boutons
+  btnFit.disabled = false;
+  btnRand.disabled = false;
+}).catch(err => {
+  console.error('Erreur KML:', err);
+  alert('Impossible de charger le KML (chemin ou CORS).');
+});
+
+// ---------------- Helpers ----------------
+function randomPointInsidePoly(poly, bounds, maxTries = 4000) {
+  // bounds: L.LatLngBounds
+  const minX = bounds.getWest(),  minY = bounds.getSouth();
+  const maxX = bounds.getEast(),  maxY = bounds.getNorth();
+
+  for (let i = 0; i < maxTries; i++) {
+    const lon = minX + Math.random() * (maxX - minX);
+    const lat = minY + Math.random() * (maxY - minY);
+    const pt = turf.point([lon, lat]); // turf = [lon,lat]
+    if (turf.booleanPointInPolygon(pt, poly)) {
+      return L.latLng(lat, lon);      // Leaflet = [lat,lon]
     }
+  }
+  return null;
+}
 
-    function wsSend(obj) {
-      if (!ws || ws.readyState !== WebSocket.OPEN) {
-        console.warn("WS non ouverte, impossible d'envoyer:", obj);
-        return false;
-      }
-      try { ws.send(JSON.stringify(obj)); return true; }
-      catch(e) { console.warn("Envoi WS échoué:", e); return false; }
-    }
+// ---------------- UI ----------------
+btnFit.onclick = () => {
+  if (!limitesBounds) { alert('KML "limites" pas chargé.'); return; }
+  map.fitBounds(limitesBounds, { padding:[30,30] });
+};
 
-    function startHeartbeat() {
-      stopHeartbeat();
-      hbTimer = setInterval(() => {
-        try { ws.send(JSON.stringify({ type: "ping", t: Date.now() })); } catch {}
-      }, 20000);
-      resetIdleTimer();
-    }
-    function resetIdleTimer() {
-      if (idleTimer) clearTimeout(idleTimer);
-      idleTimer = setTimeout(() => { try { ws.close(); } catch {} }, 45000);
-    }
-    function stopHeartbeat() {
-      if (hbTimer) { clearInterval(hbTimer); hbTimer = null; }
-      if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
-    }
+btnRand.onclick = () => {
+  if (!limitesPoly || !limitesBounds) { alert('KML "limites" pas chargé.'); return; }
+  const ll = randomPointInsidePoly(limitesPoly, limitesBounds);
+  if (!ll) { alert("Impossible de trouver un point à l'intérieur. Réessayez."); return; }
 
-    wsConnect();
+  if (marker) map.removeLayer(marker);
+  marker = L.marker(ll).addTo(map);
+  map.flyTo(ll, Math.max(18, map.getZoom()));
 
-    // ---- Bouton APPEL ROBOT ----
-    const btn = document.getElementById('btn-appel');
-    btn.addEventListener('click', () => {
-      const text =
-        "⚠️ CECI EST UN APPEL D’URGENCE.\n\n" +
-        "Confirmez-vous l’envoi de l’APPEL ROBOT ?\n" +
-        "→ Les équipes à proximité seront alertées et le robot sera appelé.";
-      if (!window.confirm(text)) return;
+  chosen = { x: ll.lat, y: ll.lng, time: Date.now() };
+  btnAppel.disabled = false; // on a une position → on peut appeler
+};
 
-      // Si l’utilisateur n’a pas cliqué la carte, on prend le centre courant
-      const target = pendingTarget ?? (() => {
-        const c = map.getCenter();
-        return { x: c.lat, y: c.lng, time: Date.now() };
-      })();
+// ---------------- (Optionnel) Appel Robot: envoi de la position choisie ----------------
+let ws = null, retry=0, hb=null, idle=null;
+function wsConnect(){
+  if (ws && (ws.readyState===WebSocket.OPEN || ws.readyState===WebSocket.CONNECTING)) return;
+  ws = new WebSocket(WS_URL);
+  ws.onopen = ()=>{ retry=0; try{ ws.send(JSON.stringify({type:'hello',client:'carte-emettrice'})) }catch{}; hb=setInterval(()=>{try{ws.send(JSON.stringify({type:'ping',t:Date.now()}))}catch{}},20000); resetIdle(); };
+  ws.onmessage = ()=> resetIdle();
+  ws.onerror = e=> console.warn('WS error', e?.message||e);
+  ws.onclose = ()=>{ clearInterval(hb); hb=null; clearTimeout(idle); idle=null; const backoff=Math.min(10000,500*Math.pow(2,retry++)); setTimeout(wsConnect, backoff); };
+  function resetIdle(){ clearTimeout(idle); idle=setTimeout(()=>{ try{ws.close()}catch{} }, 45000); }
+}
+wsConnect();
 
-      // 1) Envoi temps réel (pour l’appli Vite : “appuyer sur le bouton appel”)
-      const sentWS = wsSend({ type: "appel", data: { source: "carte-emettrice", ...target } });
+function wsSend(obj){ if(!ws || ws.readyState!==WebSocket.OPEN) return false; try{ ws.send(JSON.stringify(obj)); return true; }catch{ return false; } }
 
-      // 2) Envoi HTTP vers le webhook (position pour créer le target)
-      fetch('https://sti2d.latelier22.fr/fiber/api/call-robot', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(target)
-      })
-      .then(r => r.json())
-      .then(resp => {
-        console.log("📤 Webhook call-robot OK:", resp);
-        if (!sentWS) alert("Appel envoyé, mais la connexion temps réel n’était pas ouverte.");
-      })
-      .catch(err => {
-        console.error("❌ Webhook call-robot KO:", err);
-        alert("Échec de l’appel HTTP.\nVérifie la connexion au serveur.");
-      });
-    });
-  </script>
+btnAppel.onclick = () => {
+  if (!chosen) { alert('Choisis d’abord une position aléatoire.'); return; }
+
+  const ok = window.confirm(
+    "⚠️ CECI EST UN APPEL D’URGENCE.\n\n" +
+    "Confirmez-vous l’envoi de l’APPEL ROBOT sur la position tirée dans \"limites\" ?"
+  );
+  if (!ok) return;
+
+  // 1) WS “appel” (pour que la Map2D déclenche triggerAppel côté récepteur)
+  const sent = wsSend({ type: 'appel', data: { t: Date.now(), source: 'carte-emettrice' } });
+
+  // 2) HTTP target (pour placer le robot côté récepteurs)
+  fetch(API_URL, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(chosen)
+  })
+  .then(r => r.json())
+  .then(js => {
+    console.log('📤 call-robot OK:', js);
+    if (!sent) alert("Position envoyée (HTTP OK), mais la WebSocket n'était pas connectée.");
+  })
+  .catch(err => {
+    console.error('❌ call-robot KO:', err);
+    alert('Échec de l’appel HTTP (voir console).');
+  });
+};
+</script>
 </body>
 </html>
