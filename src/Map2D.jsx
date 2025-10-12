@@ -4,6 +4,8 @@ import { createGeoConverter } from "./utils/geo";
 
 export function Map2D({ onPathReady, onMapReady, onNodeSelect }) {
 
+/* global L, turf */
+
 // --- Connexion WebSocket pour position robot ---
 useEffect(() => {
   const ws = new WebSocket('wss://sti2d.latelier22.fr/fiber-ws/')
