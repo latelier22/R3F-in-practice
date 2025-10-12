@@ -10,6 +10,9 @@ export function Map2D({ onPathReady, onMapReady, onNodeSelect }) {
   const wsRef = useRef(null);
   const wsStateRef = useRef({ retry: 0, hbTimer: null, idleTimer: null, boundKeydown: false });
 
+  // 🔸 Déduplication des appels reçus (évite déclenchements multiples)
+  const lastAppelTsRef = useRef(null);
+
   useEffect(() => {
     const ensureLibs = async () => {
       const loaders = [];
@@ -271,12 +274,21 @@ export function Map2D({ onPathReady, onMapReady, onNodeSelect }) {
           return nearest;
         };
 
-        // ---- WebSocket : AU RECEPTION D'UN TARGET → recréer marker + auto-sélection “comme avant”
+        // ---- WebSocket : reçoit "appel" => déclenche TON appel ; reçoit "target" => MAJ marker + auto-sélection
         connectWS((msg) => {
+          // A) Appel d’urgence => déclencher l'appel robot existant
+          if (msg.type === "appel") {
+            const t = msg.data?.t || msg.data?.time || 0;
+            if (t && lastAppelTsRef.current === t) return;       // déduplication
+            lastAppelTsRef.current = t || Date.now();
+            triggerAppel();                                      // ✅ ta fonction d’appel
+            return;
+          }
+
+          // B) Mise à jour position robot => marker + nearest + chemin + sélection
           if (msg.type === "target") {
             const { x: lat, y: lon } = msg.data;
 
-            // (Re)crée le marker au besoin (après reload, il n’existe pas)
             if (!map.__robotMarker) {
               map.__robotMarker = L.marker([lat, lon], {
                 icon: L.icon({
@@ -289,10 +301,9 @@ export function Map2D({ onPathReady, onMapReady, onNodeSelect }) {
               map.__robotMarker.setLatLng([lat, lon]);
             }
 
-            // “Comme avant” : déterminer le noeud le plus proche + chemin + sélection + tracé
             const nearest = findNearestNode(lat, lon);
             if (nearest) {
-              map.__selectedNode = nearest.id;              // ← sélection automatique
+              map.__selectedNode = nearest.id;              // sélection automatique
               const path = dijkstra("A", nearest.id);
               highlightRobotPath(path);
               cbRef.current.onNodeSelect && cbRef.current.onNodeSelect(nearest.id);
@@ -318,6 +329,7 @@ export function Map2D({ onPathReady, onMapReady, onNodeSelect }) {
           return { x: v.x, z: -v.y };
         }
 
+        // ---- TON appel : envoie le chemin A → selected vers la 3D
         function triggerAppel() {
           if (map.__selectedNode) {
             const ids = dijkstra("A", map.__selectedNode);
@@ -328,7 +340,9 @@ export function Map2D({ onPathReady, onMapReady, onNodeSelect }) {
           }
         }
 
+        // Helper global (si tu veux déclencher ailleurs)
         window.callAppelFromButton = triggerAppel;
+
         if (!wsStateRef.current.boundKeydown) {
           window.addEventListener("keydown", (e) => {
             if ((e.code === "Space" || e.key === " ")) triggerAppel();

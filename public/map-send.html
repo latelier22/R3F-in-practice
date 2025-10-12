@@ -7,33 +7,127 @@
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <style>
     html, body, #map { height: 100%; margin: 0; }
+    #btn-appel {
+      position: fixed; right: 14px; top: 14px; z-index: 1000;
+      background: #ffefef; border: 2px solid #c00; color: #900;
+      font-weight: 800; padding: 10px 14px; border-radius: 12px; cursor: pointer;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.15);
+    }
   </style>
 </head>
 <body>
   <div id="map"></div>
+  <button id="btn-appel" title="Déclencher l'appel robot">🚨 APPEL ROBOT</button>
+
   <script>
+    // ---- Leaflet ----
     const map = L.map('map').setView([48.2, -2.75], 14);
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      attribution: '&copy; OpenStreetMap'
-    }).addTo(map);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '&copy; OpenStreetMap' }).addTo(map);
 
     let marker = null;
+    let pendingTarget = null; // position choisie mais pas encore envoyée
 
-map.on('click', e => {
-  const { lat, lng } = e.latlng;
-  console.log("📤 Envoi position", lat, lng);
+    // Clic sur la carte : positionne le MARQUEUR (mais n’envoie rien tant qu’on n’a pas confirmé l'appel)
+    map.on('click', e => {
+      const { lat, lng } = e.latlng;
+      pendingTarget = { x: lat, y: lng, time: Date.now() };
 
-  // ✅ supprime le précédent
-  if (marker) map.removeLayer(marker);
-  marker = L.marker([lat, lng]).addTo(map);
+      if (marker) map.removeLayer(marker);
+      marker = L.marker([lat, lng]).addTo(map);
+      console.log("📍 Position prête (en attente de confirmation) :", pendingTarget);
+    });
 
-  fetch('https://sti2d.latelier22.fr/fiber/api/call-robot', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ x: lat, y: lng })
-  }).then(r => r.json()).then(console.log);
-});
+    // ---- WebSocket client (pour diffuser type:"appel") ----
+    const WS_URL = "wss://sti2d.latelier22.fr/fiber-ws/";
+    let ws = null, wsRetry = 0, hbTimer = null, idleTimer = null;
 
+    function wsConnect() {
+      if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+      ws = new WebSocket(WS_URL);
+
+      ws.onopen = () => {
+        console.log("✅ WS ouverte");
+        wsRetry = 0;
+        try { ws.send(JSON.stringify({ type: "hello", client: "emetteur-map" })); } catch {}
+        startHeartbeat();
+      };
+
+      ws.onmessage = (e) => {
+        // Ici on n’a rien de particulier à recevoir (la carte émet)
+        resetIdleTimer();
+      };
+
+      ws.onerror = (err) => console.warn("❌ WS erreur", err);
+
+      ws.onclose = () => {
+        console.warn("🔌 WS fermée");
+        stopHeartbeat();
+        const backoff = Math.min(10000, 500 * Math.pow(2, wsRetry++));
+        setTimeout(wsConnect, backoff);
+      };
+    }
+
+    function wsSend(obj) {
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        console.warn("WS non ouverte, impossible d'envoyer:", obj);
+        return false;
+      }
+      try { ws.send(JSON.stringify(obj)); return true; }
+      catch(e) { console.warn("Envoi WS échoué:", e); return false; }
+    }
+
+    function startHeartbeat() {
+      stopHeartbeat();
+      hbTimer = setInterval(() => {
+        try { ws.send(JSON.stringify({ type: "ping", t: Date.now() })); } catch {}
+      }, 20000);
+      resetIdleTimer();
+    }
+    function resetIdleTimer() {
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => { try { ws.close(); } catch {} }, 45000);
+    }
+    function stopHeartbeat() {
+      if (hbTimer) { clearInterval(hbTimer); hbTimer = null; }
+      if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
+    }
+
+    wsConnect();
+
+    // ---- Bouton APPEL ROBOT ----
+    const btn = document.getElementById('btn-appel');
+    btn.addEventListener('click', () => {
+      const text =
+        "⚠️ CECI EST UN APPEL D’URGENCE.\n\n" +
+        "Confirmez-vous l’envoi de l’APPEL ROBOT ?\n" +
+        "→ Les équipes à proximité seront alertées et le robot sera appelé.";
+      if (!window.confirm(text)) return;
+
+      // Si l’utilisateur n’a pas cliqué la carte, on prend le centre courant
+      const target = pendingTarget ?? (() => {
+        const c = map.getCenter();
+        return { x: c.lat, y: c.lng, time: Date.now() };
+      })();
+
+      // 1) Envoi temps réel (pour l’appli Vite : “appuyer sur le bouton appel”)
+      const sentWS = wsSend({ type: "appel", data: { source: "carte-emettrice", ...target } });
+
+      // 2) Envoi HTTP vers le webhook (position pour créer le target)
+      fetch('https://sti2d.latelier22.fr/fiber/api/call-robot', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(target)
+      })
+      .then(r => r.json())
+      .then(resp => {
+        console.log("📤 Webhook call-robot OK:", resp);
+        if (!sentWS) alert("Appel envoyé, mais la connexion temps réel n’était pas ouverte.");
+      })
+      .catch(err => {
+        console.error("❌ Webhook call-robot KO:", err);
+        alert("Échec de l’appel HTTP.\nVérifie la connexion au serveur.");
+      });
+    });
   </script>
 </body>
 </html>
