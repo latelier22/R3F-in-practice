@@ -17,17 +17,23 @@
       attribution: '&copy; OpenStreetMap'
     }).addTo(map);
 
-    map.on('click', e => {
-      const { lat, lng } = e.latlng;
-      L.marker([lat, lng]).addTo(map);
-      console.log('📤 Envoi position', lat, lng);
+    let marker = null;
 
-      fetch('/fiber/api/call-robot', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ x: lat, y: lng })
-      }).then(r => r.json()).then(console.log);
-    });
+map.on('click', e => {
+  const { lat, lng } = e.latlng;
+  console.log("📤 Envoi position", lat, lng);
+
+  // ✅ supprime le précédent
+  if (marker) map.removeLayer(marker);
+  marker = L.marker([lat, lng]).addTo(map);
+
+  fetch('https://sti2d.latelier22.fr/fiber/api/call-robot', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ x: lat, y: lng })
+  }).then(r => r.json()).then(console.log);
+});
+
   </script>
 </body>
 </html>

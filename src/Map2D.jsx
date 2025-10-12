@@ -26,7 +26,11 @@ export function Map2D({ onPathReady, onMapReady, onNodeSelect }) {
 
     function init(L, turf) {
       // Empêche la double init
-      if (window.__map2d) return;
+      if (window.__map2d) {
+  window.__map2d.remove();  // ✅ détruit complètement la carte précédente
+  delete window.__map2d;
+}
+
 
       const map = L.map("map2d", { preferCanvas: true }).setView([48.185, -2.758], 19);
       window.__map2d = map;
