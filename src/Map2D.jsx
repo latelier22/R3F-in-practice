@@ -10,6 +10,9 @@ export function Map2D({ onPathReady, onMapReady, onNodeSelect }) {
   const wsRef = useRef(null);
   const wsStateRef = useRef({ retry: 0, hbTimer: null, idleTimer: null, boundKeydown: false });
 
+  // Appel en attente si "appel" arrive avant qu'un nœud soit sélectionné
+const pendingAppelRef = useRef(false);
+
   // 🔸 Déduplication des appels reçus (évite déclenchements multiples)
   const lastAppelTsRef = useRef(null);
 
@@ -275,41 +278,53 @@ export function Map2D({ onPathReady, onMapReady, onNodeSelect }) {
         };
 
         // ---- WebSocket : reçoit "appel" => déclenche TON appel ; reçoit "target" => MAJ marker + auto-sélection
-        connectWS((msg) => {
-          // A) Appel d’urgence => déclencher l'appel robot existant
-          if (msg.type === "appel") {
-            const t = msg.data?.t || msg.data?.time || 0;
-            if (t && lastAppelTsRef.current === t) return;       // déduplication
-            lastAppelTsRef.current = t || Date.now();
-            triggerAppel();                                      // ✅ ta fonction d’appel
-            return;
-          }
+     connectWS((msg) => {
+  // A) Si on reçoit un APPEL
+  if (msg.type === "appel") {
+    // Si pas encore de nœud sélectionné, on met l'appel en attente
+    if (!window.__map2d?.__selectedNode) {
+      pendingAppelRef.current = true;
+    } else {
+      // Sinon on peut appeler tout de suite
+      triggerAppel();
+    }
+    return;
+  }
 
-          // B) Mise à jour position robot => marker + nearest + chemin + sélection
-          if (msg.type === "target") {
-            const { x: lat, y: lon } = msg.data;
+  // B) Si on reçoit un TARGET (position du robot)
+  if (msg.type === "target") {
+    const { x: lat, y: lon } = msg.data;
 
-            if (!map.__robotMarker) {
-              map.__robotMarker = L.marker([lat, lon], {
-                icon: L.icon({
-                  iconUrl: "https://cdn-icons-png.flaticon.com/512/3448/3448594.png",
-                  iconSize: [32, 32],
-                  iconAnchor: [16, 16],
-                })
-              }).addTo(map);
-            } else {
-              map.__robotMarker.setLatLng([lat, lon]);
-            }
+    // (Re)crée le marker si besoin
+    if (!map.__robotMarker) {
+      map.__robotMarker = L.marker([lat, lon], {
+        icon: L.icon({
+          iconUrl: "https://cdn-icons-png.flaticon.com/512/3448/3448594.png",
+          iconSize: [32, 32],
+          iconAnchor: [16, 16],
+        })
+      }).addTo(map);
+    } else {
+      map.__robotMarker.setLatLng([lat, lon]);
+    }
 
-            const nearest = findNearestNode(lat, lon);
-            if (nearest) {
-              map.__selectedNode = nearest.id;              // sélection automatique
-              const path = dijkstra("A", nearest.id);
-              highlightRobotPath(path);
-              cbRef.current.onNodeSelect && cbRef.current.onNodeSelect(nearest.id);
-            }
-          }
-        });
+    // Sélectionne auto le nœud le plus proche et trace
+    const nearest = findNearestNode(lat, lon);
+    if (nearest) {
+      map.__selectedNode = nearest.id;
+      const path = dijkstra("A", nearest.id);
+      highlightRobotPath(path);
+      cbRef.current.onNodeSelect && cbRef.current.onNodeSelect(nearest.id);
+
+      // 👉 Si un appel était en attente, on le déclenche maintenant
+      if (pendingAppelRef.current) {
+        pendingAppelRef.current = false;
+        triggerAppel();
+      }
+    }
+  }
+});
+
 
         // Notifier 3D quand prêt
         if (cbRef.current.onMapReady && map.__originA && map.__toLocal) {
