@@ -33,6 +33,22 @@ const KML_URL = 'lycee.kml'; // <-- adapte si besoin
 const WS_URL  = 'wss://sti2d.latelier22.fr/fiber-ws/';
 const API_URL = 'https://sti2d.latelier22.fr/fiber/api/call-robot';
 
+function placeRandom() {
+  if (!limitesPoly || !limitesBounds) return;
+  const ll = randomPointInsidePoly(limitesPoly, limitesBounds);
+  if (!ll) return; // rien, si pas trouvé (rare) — tu peux relancer placeRandom() si tu veux
+
+  if (marker) map.removeLayer(marker);
+  marker = L.marker(ll).addTo(map);
+  // centre (sans zoom agressif au 1er chargement)
+  map.setView(ll, Math.max(18, map.getZoom()));
+
+  // mémorise la cible pour l'appel
+  chosen = { x: ll.lat, y: ll.lng, time: Date.now() };
+  btnAppel.disabled = false;
+}
+
+
 const map = L.map('map', { preferCanvas:true }).setView([48.185, -2.758], 18);
 L.tileLayer('https://{s}.tile.openstreetmap.fr/osmfr/{z}/{x}/{y}.png', {
   attribution: '© OSM France', maxZoom: 20
@@ -99,6 +115,10 @@ fetch(KML_URL).then(r => r.text()).then(kmlText => {
   // Active les boutons
   btnFit.disabled = false;
   btnRand.disabled = false;
+
+  // 👉 Tirage initial automatique
+   placeRandom();
+   
 }).catch(err => {
   console.error('Erreur KML:', err);
   alert('Impossible de charger le KML (chemin ou CORS).');
@@ -128,17 +148,12 @@ btnFit.onclick = () => {
 };
 
 btnRand.onclick = () => {
-  if (!limitesPoly || !limitesBounds) { alert('KML "limites" pas chargé.'); return; }
-  const ll = randomPointInsidePoly(limitesPoly, limitesBounds);
-  if (!ll) { alert("Impossible de trouver un point à l'intérieur. Réessayez."); return; }
 
-  if (marker) map.removeLayer(marker);
-  marker = L.marker(ll).addTo(map);
-  map.flyTo(ll, Math.max(18, map.getZoom()));
-
-  chosen = { x: ll.lat, y: ll.lng, time: Date.now() };
-  btnAppel.disabled = false; // on a une position → on peut appeler
+ if (!limitesPoly || !limitesBounds) { alert('KML "limites" pas chargé.'); return; }
+ placeRandom();
+ if (marker) map.flyTo(marker.getLatLng(), Math.max(18, map.getZoom()));
 };
+
 
 // ---------------- (Optionnel) Appel Robot: envoi de la position choisie ----------------
 let ws = null, retry=0, hb=null, idle=null;
