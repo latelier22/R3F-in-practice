@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <title>Client — Appel & Suivi robot (temps réel)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <style>
+    :root { --pad: 14px; }
+    html, body { height: 100%; margin: 0; font-family: system-ui, sans-serif; }
+    #map { height: 65vh; }
+    .panel { padding: var(--pad); display: grid; gap: 12px; }
+    button {
+      padding: 12px 16px; font-weight: 800; border-radius: 12px; cursor: pointer;
+      border: 2px solid #c00; background: #ffefef; color: #900;
+    }
+    .meta { color: #555; font-size: 14px; padding: 0 var(--pad); }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <div class="panel">
+    <button id="btn-appel">🚨 APPEL ROBOT (depuis ma position)</button>
+    <div class="meta" id="status">En attente de géolocalisation…</div>
+  </div>
+
+<script>
+const WS_URL          = 'wss://sti2d.latelier22.fr/fiber-ws/';
+const API_CALL_ROBOT  = 'https://sti2d.latelier22.fr/fiber/api/call-robot';
+
+const map = L.map('map').setView([48.185, -2.758], 17);
+L.tileLayer('https://{s}.tile.openstreetmap.fr/osmfr/{z}/{x}/{y}.png', {
+  attribution: '© OSM France', maxZoom: 20
+}).addTo(map);
+
+const statusEl = document.getElementById('status');
+const btnAppel = document.getElementById('btn-appel');
+
+let meMarker=null, meAccuracy=null, lastFix=null;
+let robotMarker=null, robotTrail=null, robotTrailCoords=[];
+
+// ---- WebSocket : écoute la position robot en temps réel
+let ws=null, retry=0, hb=null, idle=null;
+function wsConnect(){
+  if (ws && (ws.readyState===WebSocket.OPEN || ws.readyState===WebSocket.CONNECTING)) return;
+  ws = new WebSocket(WS_URL);
+  ws.onopen = ()=>{
+    retry=0;
+    try { ws.send(JSON.stringify({ type:'hello', client:'client-live' })); } catch {}
+    hb = setInterval(()=>{ try { ws.send(JSON.stringify({type:'ping', t:Date.now()})) } catch{} }, 20000);
+    resetIdle();
+  };
+  ws.onmessage = (e)=>{
+    resetIdle();
+    let msg=null; try { msg=JSON.parse(e.data); } catch {}
+    if (!msg) return;
+
+    // ← POSITION LIVE DU ROBOT
+    if (msg.type === 'robot') {
+      const { x: lat, y: lon, time } = msg.data || {};
+      if (typeof lat !== 'number' || typeof lon !== 'number') return;
+      const ll = L.latLng(lat, lon);
+
+      if (!robotMarker) {
+        robotMarker = L.marker(ll, {
+          icon: L.icon({
+            iconUrl: "https://cdn-icons-png.flaticon.com/512/3448/3448594.png",
+            iconSize: [32,32], iconAnchor: [16,16]
+          })
+        }).addTo(map);
+        robotTrailCoords = [ll];
+        robotTrail = L.polyline(robotTrailCoords, { weight:3, opacity:.8 }).addTo(map);
+      } else {
+        robotMarker.setLatLng(ll);
+        robotTrailCoords.push(ll);
+        robotTrail.setLatLngs(robotTrailCoords.slice(-500));
+      }
+    }
+  };
+  ws.onerror = (e)=> console.warn('WS error', e?.message||e);
+  ws.onclose = ()=>{
+    clearInterval(hb); hb=null; clearTimeout(idle); idle=null;
+    const backoff = Math.min(10000, 500*Math.pow(2, retry++));
+    setTimeout(wsConnect, backoff);
+  };
+  function resetIdle(){ clearTimeout(idle); idle=setTimeout(()=>{ try{ws.close()}catch{} }, 45000); }
+}
+wsConnect();
+
+function wsSend(obj){ if(!ws || ws.readyState!==WebSocket.OPEN) return false; try{ ws.send(JSON.stringify(obj)); return true; }catch{ return false; } }
+
+// ---- Géoloc téléphone
+navigator.geolocation.watchPosition(
+  pos => {
+    const { latitude, longitude, accuracy } = pos.coords;
+    lastFix = { x: latitude, y: longitude, acc: accuracy, time: Date.now() };
+    const ll = L.latLng(latitude, longitude);
+    if (!meMarker) {
+      meMarker = L.marker(ll).addTo(map);
+      meAccuracy = L.circle(ll, { radius: accuracy, color:'#08f', fillColor:'#08f', fillOpacity:.15 }).addTo(map);
+      map.setView(ll, 18);
+    } else {
+      meMarker.setLatLng(ll);
+      meAccuracy.setLatLng(ll).setRadius(accuracy);
+    }
+    statusEl.textContent = `Ma position: lat ${latitude.toFixed(6)} / lon ${longitude.toFixed(6)} (±${Math.round(accuracy)} m)`;
+  },
+  err => { statusEl.textContent = "Erreur géoloc: " + err.message; },
+  { enableHighAccuracy:true, maximumAge:5000, timeout:12000 }
+);
+
+// ---- Bouton APPEL : envoie l'évènement + la destination (target)
+btnAppel.addEventListener('click', async ()=>{
+  if (!lastFix) { alert("Position non disponible. Autorise la géoloc."); return; }
+  if (!confirm("⚠️ CECI EST UN APPEL D'URGENCE.\nConfirmez-vous l'envoi ?")) return;
+
+  const sent = wsSend({ type:'appel', data:{ t: Date.now(), source:'client' } });
+
+  try {
+    const r = await fetch(API_CALL_ROBOT, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ x:lastFix.x, y:lastFix.y, time: Date.now(), meta:{ acc:lastFix.acc, source:'client' } })
+    });
+    const js = await r.json();
+    console.log('📤 call-robot OK', js);
+    if (!sent) alert("Destination envoyée, mais WS non connectée.");
+  } catch(e) {
+    alert("Échec de l'appel HTTP.");
+  }
+});
+</script>
+</body>
+</html>

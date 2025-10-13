@@ -10,10 +10,8 @@ export function Map2D({ onPathReady, onMapReady, onNodeSelect }) {
   const wsRef = useRef(null);
   const wsStateRef = useRef({ retry: 0, hbTimer: null, idleTimer: null, boundKeydown: false });
 
-  // Appel en attente si "appel" arrive avant qu'un nœud soit sélectionné
-const pendingAppelRef = useRef(false);
-
-  // 🔸 Déduplication des appels reçus (évite déclenchements multiples)
+  // appel en attente si "appel" arrive avant qu'un nœud soit sélectionné
+  const pendingAppelRef = useRef(false);
   const lastAppelTsRef = useRef(null);
 
   useEffect(() => {
@@ -43,7 +41,6 @@ const pendingAppelRef = useRef(false);
           wsRef.current = null;
         }
         clearHeartbeat();
-        // Soft reset garantit : aucun marker, aucune sélection après unload
         softReset(window.__map2d);
       };
     });
@@ -51,7 +48,7 @@ const pendingAppelRef = useRef(false);
     return () => cleanup();
   }, []);
 
-  // ---------------- Heartbeat / Reco WS ----------------
+  // ---------------- WS heartbeat / reco ----------------
   function startHeartbeat(ws) {
     const sendPing = () => { try { ws.send(JSON.stringify({ type: "ping", t: Date.now() })); } catch {} };
     wsStateRef.current.hbTimer = setInterval(sendPing, 20000);
@@ -95,22 +92,15 @@ const pendingAppelRef = useRef(false);
     };
   }
 
-  // ---------------- SOFT RESET : aucun marker, aucune sélection ----------------
+  // ---------------- RESET ----------------
   function softReset(map) {
     if (!map) return;
-
-    // Supprimer nos couches et marqueurs
-    if (map.__pathsByWoman) {
-      Object.values(map.__pathsByWoman).forEach(l => { try { map.removeLayer(l); } catch {} });
-      map.__pathsByWoman = {};
-    }
+    if (map.__pathsByWoman) { Object.values(map.__pathsByWoman).forEach(l => { try { map.removeLayer(l); } catch {} }); map.__pathsByWoman = {}; }
     if (map.__lastPathLayer) { try { map.removeLayer(map.__lastPathLayer); } catch {} map.__lastPathLayer = null; }
-    if (map.__robotMarker) { try { map.removeLayer(map.__robotMarker); } catch {} map.__robotMarker = null; }
-
-    // Désabonner events posés
+    if (map.__robotLiveMarker) { try { map.removeLayer(map.__robotLiveMarker); } catch {} map.__robotLiveMarker = null; }
+    if (map.__robotLiveTrail) { try { map.removeLayer(map.__robotLiveTrail); } catch {} map.__robotLiveTrail = null; }
+    if (map.__targetMarker) { try { map.removeLayer(map.__targetMarker); } catch {} map.__targetMarker = null; }
     try { map.off(); } catch {}
-
-    // Réinitialiser *entièrement* l'état session
     map.__selectedNode = null;
     map.__allNodes = [];
     map.__allLinks = [];
@@ -118,8 +108,6 @@ const pendingAppelRef = useRef(false);
     map.__extrusionsData = [];
     map.__originA = null;
     map.__toLocal = null;
-
-    // Helper globaux nettoyés
     delete window.map2D_drawByNodeIds;
     delete window.callAppelFromButton;
   }
@@ -134,20 +122,24 @@ const pendingAppelRef = useRef(false);
         attribution: "© OSM France", maxZoom: 20,
       }).addTo(map);
     } else {
-      // Réutilisation sans flicker, mais remise à zéro stricte
       softReset(map);
     }
 
-    // États de session (vides au reload)
+    // états init
     map.__pathsByWoman = map.__pathsByWoman || {};
-    map.__selectedNode = null;   // ← aucune sélection au départ
+    map.__selectedNode = null;
     map.__lastPathLayer = null;
-    map.__robotMarker = null;    // ← aucun marker au départ
 
+    // markers/trails
+    map.__robotLiveMarker = null;      // ← position en temps réel (msg 'robot')
+    map.__robotLiveTrail = null;       // ← trace du robot
+    map.__robotLiveTrailCoords = [];   // tableau latlng
+    map.__targetMarker = null;         // ← destination (msg 'target')
+
+    // données
     map.__allNodes = [];
     map.__allLinks = [];
     map.__obstacles = [];
-    map.__extrusionsData = [];
     map.__originA = null;
     map.__toLocal = null;
 
@@ -155,13 +147,9 @@ const pendingAppelRef = useRef(false);
     const allLinks = map.__allLinks;
     const obstacles = map.__obstacles;
 
-    // Helper : dessiner un chemin par ids pour une “woman”
     window.map2D_drawByNodeIds = (wid, nodeIds, color = "#c03") => {
       if (!nodeIds || nodeIds.length < 2) return;
-      if (map.__pathsByWoman[wid]) {
-        map.removeLayer(map.__pathsByWoman[wid]);
-        delete map.__pathsByWoman[wid];
-      }
+      if (map.__pathsByWoman[wid]) { map.removeLayer(map.__pathsByWoman[wid]); delete map.__pathsByWoman[wid]; }
       const latlngs = nodeIds.map(id => {
         const n = allNodes.find(nn => nn.id === id);
         return [n.lat, n.lon];
@@ -171,7 +159,7 @@ const pendingAppelRef = useRef(false);
 
     const nodeName = (i) => { let s = ""; while (i >= 0) { s = String.fromCharCode(65 + (i % 26)) + s; i = Math.floor(i / 26) - 1; } return s; };
 
-    // Charger KML → points (noeuds) + polygones (obstacles)
+    // Charger KML (nodes + obstacles)
     fetch(process.env.PUBLIC_URL + "/lycee.kml")
       .then(r => r.text())
       .then(txt => {
@@ -183,7 +171,6 @@ const pendingAppelRef = useRef(false);
           const point = pm.querySelector("Point>coordinates");
           const poly = pm.querySelector("Polygon>outerBoundaryIs>LinearRing>coordinates");
 
-          // Noeuds
           if (point) {
             const [lon, lat] = point.textContent.trim().split(",").map(Number);
             const id = nodeName(allNodes.length);
@@ -191,25 +178,23 @@ const pendingAppelRef = useRef(false);
               map.__originA = { lat, lon };
               map.__toLocal = createGeoConverter(lat, lon, 0.05);
             }
-            const marker = L.circleMarker([lat, lon], {
-              radius: 6, color: "black", fillColor: "orange", fillOpacity: 0.9,
-            }).addTo(map);
-            marker.bindTooltip(id);
-            marker.on("click", () => {
-              // Sélection explicite par l’utilisateur
+            const cm = L.circleMarker([lat, lon], { radius: 6, color: "black", fillColor: "orange", fillOpacity: 0.9 }).addTo(map);
+            cm.bindTooltip(id);
+            cm.on("click", () => {
               map.__selectedNode = id;
               const path = dijkstra("A", id);
               highlightRobotPath(path);
               cbRef.current.onNodeSelect && cbRef.current.onNodeSelect(id);
+              // si un appel attendait, on le déclenche
+              if (pendingAppelRef.current) { pendingAppelRef.current = false; triggerAppel(); }
             });
             allNodes.push({ id, lat, lon });
           }
 
-          // Obstacles
           if (poly) {
             const coords = poly.textContent.trim().split(/\s+/).map(c => {
-              const [lon, lat] = c.split(",").map(Number);
-              return [lat, lon];
+              const [lo, la] = c.split(",").map(Number);
+              return [la, lo];
             });
             let color = "gray", fill = "lightgray";
             if (name === "" || name.toLowerCase().includes("sans titre")) { color = "green"; fill = "lightgreen"; }
@@ -219,14 +204,14 @@ const pendingAppelRef = useRef(false);
           }
         });
 
-        // Liaisons (sans traverser les obstacles)
+        // Graphe (liaisons sans obstacles)
         for (let i = 0; i < allNodes.length; i++) {
           for (let j = i + 1; j < allNodes.length; j++) {
             const n1 = allNodes[i], n2 = allNodes[j];
             const line = turf.lineString([[n1.lon, n1.lat], [n2.lon, n2.lat]]);
             let interdit = false;
             obstacles.forEach(coords => {
-              const poly = turf.polygon([coords.map(([lat, lon]) => [lon, lat])]);
+              const poly = turf.polygon([coords.map(([la, lo]) => [lo, la])]);
               if (turf.lineIntersect(line, poly).features.length > 0) interdit = true;
             });
             if (interdit) continue;
@@ -235,7 +220,7 @@ const pendingAppelRef = useRef(false);
           }
         }
 
-        // ---- Dijkstra
+        // Dijkstra
         function dijkstra(start, end) {
           const dist = {}, prev = {}, Q = new Set(allNodes.map(n => n.id));
           allNodes.forEach(n => dist[n.id] = Infinity);
@@ -256,7 +241,7 @@ const pendingAppelRef = useRef(false);
           return path;
         }
 
-        // ---- Tracé du chemin
+        // Chemin A → selected
         function highlightRobotPath(path) {
           if (map.__lastPathLayer) { try { map.removeLayer(map.__lastPathLayer); } catch {} map.__lastPathLayer = null; }
           if (!path.length) return;
@@ -267,7 +252,7 @@ const pendingAppelRef = useRef(false);
           map.__lastPathLayer = L.polyline(latlngs, { color: "orange", weight: 4 }).addTo(map);
         }
 
-        // ---- Outil nearest
+        // nearest
         const findNearestNode = (lat, lon) => {
           let nearest = null, min = Infinity;
           allNodes.forEach(n => {
@@ -277,56 +262,74 @@ const pendingAppelRef = useRef(false);
           return nearest;
         };
 
-        // ---- WebSocket : reçoit "appel" => déclenche TON appel ; reçoit "target" => MAJ marker + auto-sélection
-     connectWS((msg) => {
-  // A) Si on reçoit un APPEL
-  if (msg.type === "appel") {
-    // Si pas encore de nœud sélectionné, on met l'appel en attente
-    if (!window.__map2d?.__selectedNode) {
-      pendingAppelRef.current = true;
-    } else {
-      // Sinon on peut appeler tout de suite
-      triggerAppel();
-    }
-    return;
-  }
+        // -------- WS handler : appel / target / robot --------
+        connectWS((msg) => {
+          // A) APPEL : déclenche triggerAppel (ou attend sélection)
+          if (msg.type === "appel") {
+            const t = Number(msg.data?.t || msg.data?.time || Date.now());
+            if (lastAppelTsRef.current && t <= lastAppelTsRef.current) return;
+            lastAppelTsRef.current = t;
+            if (!window.__map2d?.__selectedNode) {
+              pendingAppelRef.current = true;
+            } else {
+              triggerAppel();
+            }
+            return;
+          }
 
-  // B) Si on reçoit un TARGET (position du robot)
-  if (msg.type === "target") {
-    const { x: lat, y: lon } = msg.data;
+          // B) TARGET (destination) : affiche un marker rouge, sélectionne nearest, trace chemin
+          if (msg.type === "target") {
+            const { x: lat, y: lon } = msg.data || {};
+            if (typeof lat !== "number" || typeof lon !== "number") return;
 
-    // (Re)crée le marker si besoin
-    if (!map.__robotMarker) {
-      map.__robotMarker = L.marker([lat, lon], {
-        icon: L.icon({
-          iconUrl: "https://cdn-icons-png.flaticon.com/512/3448/3448594.png",
-          iconSize: [32, 32],
-          iconAnchor: [16, 16],
-        })
-      }).addTo(map);
-    } else {
-      map.__robotMarker.setLatLng([lat, lon]);
-    }
+            // marker destination (indépendant du robot live)
+            if (!map.__targetMarker) {
+              map.__targetMarker = L.marker([lat, lon], {
+                icon: L.icon({
+                  iconUrl: "https://cdn-icons-png.flaticon.com/512/684/684908.png", // icône cible
+                  iconSize: [28, 28], iconAnchor: [14, 14]
+                })
+              }).addTo(map);
+            } else {
+              map.__targetMarker.setLatLng([lat, lon]);
+            }
 
-    // Sélectionne auto le nœud le plus proche et trace
-    const nearest = findNearestNode(lat, lon);
-    if (nearest) {
-      map.__selectedNode = nearest.id;
-      const path = dijkstra("A", nearest.id);
-      highlightRobotPath(path);
-      cbRef.current.onNodeSelect && cbRef.current.onNodeSelect(nearest.id);
+            const nearest = findNearestNode(lat, lon);
+            if (nearest) {
+              map.__selectedNode = nearest.id;
+              const path = dijkstra("A", nearest.id);
+              highlightRobotPath(path);
+              cbRef.current.onNodeSelect && cbRef.current.onNodeSelect(nearest.id);
+              if (pendingAppelRef.current) { pendingAppelRef.current = false; triggerAppel(); }
+            }
+            return;
+          }
 
-      // 👉 Si un appel était en attente, on le déclenche maintenant
-      if (pendingAppelRef.current) {
-        pendingAppelRef.current = false;
-        triggerAppel();
-      }
-    }
-  }
-});
+          // C) ROBOT (position live) : met à jour le marker + trace
+          if (msg.type === "robot") {
+            const { x: lat, y: lon } = msg.data || {};
+            if (typeof lat !== "number" || typeof lon !== "number") return;
+            const ll = L.latLng(lat, lon);
 
+            if (!map.__robotLiveMarker) {
+              map.__robotLiveMarker = L.marker(ll, {
+                icon: L.icon({
+                  iconUrl: "https://cdn-icons-png.flaticon.com/512/3448/3448594.png",
+                  iconSize: [32, 32], iconAnchor: [16, 16]
+                })
+              }).addTo(map);
+              map.__robotLiveTrailCoords = [ll];
+              map.__robotLiveTrail = L.polyline(map.__robotLiveTrailCoords, { weight:3, opacity:.85 }).addTo(map);
+            } else {
+              map.__robotLiveMarker.setLatLng(ll);
+              map.__robotLiveTrailCoords.push(ll);
+              map.__robotLiveTrail.setLatLngs(map.__robotLiveTrailCoords.slice(-800));
+            }
+            return;
+          }
+        });
 
-        // Notifier 3D quand prêt
+        // notifier 3D quand prêt
         if (cbRef.current.onMapReady && map.__originA && map.__toLocal) {
           cbRef.current.onMapReady({
             nodes: allNodes.map(n => {
@@ -344,7 +347,6 @@ const pendingAppelRef = useRef(false);
           return { x: v.x, z: -v.y };
         }
 
-        // ---- TON appel : envoie le chemin A → selected vers la 3D
         function triggerAppel() {
           if (map.__selectedNode) {
             const ids = dijkstra("A", map.__selectedNode);
@@ -355,13 +357,10 @@ const pendingAppelRef = useRef(false);
           }
         }
 
-        // Helper global (si tu veux déclencher ailleurs)
         window.callAppelFromButton = triggerAppel;
 
         if (!wsStateRef.current.boundKeydown) {
-          window.addEventListener("keydown", (e) => {
-            if ((e.code === "Space" || e.key === " ")) triggerAppel();
-          });
+          window.addEventListener("keydown", (e) => { if ((e.code === "Space" || e.key === " ")) triggerAppel(); });
           wsStateRef.current.boundKeydown = true;
         }
       });
