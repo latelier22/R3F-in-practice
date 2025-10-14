@@ -13,6 +13,8 @@ export function Car({ pathPoints, toGeo, telemetryUrl = "https://sti2d.latelier2
   const ref = useRef();
   const model = useLoader(GLTFLoader, process.env.PUBLIC_URL + "/models/car.glb").scene;
 
+  const firstTelemetrySentRef = useRef(false); // ← pour n'envoyer qu'une fois au reload
+
   const [moving, setMoving] = useState(false);
   const [idx, setIdx] = useState(0);
   const [t, setT] = useState(0);
@@ -53,6 +55,14 @@ export function Car({ pathPoints, toGeo, telemetryUrl = "https://sti2d.latelier2
       // reset télémétrie
       lastTelemAtRef.current = 0;
       lastTelemPosRef.current = { x: pathPoints[0].x, z: pathPoints[0].z, t: performance.now() };
+           // 👉 kickstart si toGeo dispo
+     if (typeof toGeo === "function" && ref.current && !firstTelemetrySentRef.current) {
+       const p = ref.current.position;
+       const headingDeg = THREE.MathUtils.radToDeg(ref.current.rotation?.y || 0);
+       const { lat, lon } = toGeo(p.x, p.z);
+       postTelemetry(lat, lon, headingDeg, 0); // speed=0 au démarrage
+       firstTelemetrySentRef.current = true;
+     }
     } else {
       setMoving(false);
     }
