@@ -22,6 +22,10 @@ export function Scene({ pathPoints, mapData }) {
     return () => window.removeEventListener("keydown", handler);
   }, []);
 
+    useEffect(() => {
+    if (mapData?.toGeo) setToGeo(() => mapData.toGeo);
+  }, [mapData]);
+
   return (
     <Suspense fallback={null}>
       <Environment files={process.env.PUBLIC_URL + "/textures/envmap.hdr"} background={"both"} />

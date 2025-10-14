@@ -23,6 +23,8 @@ export function Car({ pathPoints, toGeo, telemetryUrl = "https://sti2d.latelier2
   const baseSpeed = 0.004;
   const baseRotLerp = 0.12;
 
+
+
   // --- télémétrie (throttle 1 Hz) ---
   const lastTelemAtRef = useRef(0);
   const lastTelemPosRef = useRef({ x: null, z: null, t: 0 });
@@ -59,11 +61,12 @@ export function Car({ pathPoints, toGeo, telemetryUrl = "https://sti2d.latelier2
   // télémétrie HTTP
   const postTelemetry = (lat, lon, headingDeg = null, speed = null) => {
     // pas d'attente de réponse / fire-and-forget
+    console.log("[Car] POST /robot-pos", { lat, lon, headingDeg, speed, at: new Date().toISOString() });
     fetch(telemetryUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ x: lat, y: lon, heading: headingDeg, speed })
-    }).catch(() => {});
+    }).catch(() => { });
   };
 
   useFrame((state, delta) => {
@@ -148,6 +151,7 @@ export function Car({ pathPoints, toGeo, telemetryUrl = "https://sti2d.latelier2
 
       // conversion locale → géo
       const { lat, lon } = toGeo(pos.x, pos.z);
+      console.log("[Car] toGeo(", pos.x, pos.z, ") →", lat, lon);
       postTelemetry(lat, lon, headingDeg, speed);
     }
   });
