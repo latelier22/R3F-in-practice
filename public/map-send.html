@@ -23,166 +23,149 @@
   <div id="map"></div>
   <div class="tools">
     <button id="fit" class="btn">🗺️ Zoom "limites"</button>
-    <button id="rand" class="btn">🎯 Point aléatoire dans "limites"</button>
+    <button id="rand" class="btn">🎯 Point aléatoire</button>
     <button id="appel" class="btn alert" disabled>🚨 APPEL ROBOT</button>
   </div>
 
 <script>
-const KML_URL = 'lycee.kml'; // <-- adapte si besoin
-// (Optionnel) endpoints si tu veux envoyer l'appel
+const KML_URL = 'lycee.kml';
 const WS_URL  = 'wss://sti2d.latelier22.fr/fiber-ws/';
 const API_URL = 'https://sti2d.latelier22.fr/fiber/api/call-robot';
 
-function placeRandom() {
-  if (!limitesPoly || !limitesBounds) return;
-  const ll = randomPointInsidePoly(limitesPoly, limitesBounds);
-  if (!ll) return; // rien, si pas trouvé (rare) — tu peux relancer placeRandom() si tu veux
-
-  if (marker) map.removeLayer(marker);
-  marker = L.marker(ll).addTo(map);
-  // centre (sans zoom agressif au 1er chargement)
-  map.setView(ll, Math.max(18, map.getZoom()));
-
-  // mémorise la cible pour l'appel
-  chosen = { x: ll.lat, y: ll.lng, time: Date.now() };
-  btnAppel.disabled = false;
-}
-
+let limitesPoly = null, limitesBounds = null;
+let limitesLayer = null, marker = null, chosen = null;
+let robotMarker = null;          // --- AJOUT
+let robotTrail = null;           // --- AJOUT
+let robotTrailCoords = [];       // --- AJOUT
 
 const map = L.map('map', { preferCanvas:true }).setView([48.185, -2.758], 18);
 L.tileLayer('https://{s}.tile.openstreetmap.fr/osmfr/{z}/{x}/{y}.png', {
   attribution: '© OSM France', maxZoom: 20
 }).addTo(map);
 
-let limitesPoly = null;        // turf.polygon (le vrai “limites”)
-let limitesLayer = null;       // Layer Leaflet
-let limitesBounds = null;      // L.LatLngBounds du polygone
-let marker = null;             // Marker choisi
-let chosen = null;             // { x:lat, y:lng, time }
-
 const btnFit   = document.getElementById('fit');
 const btnRand  = document.getElementById('rand');
 const btnAppel = document.getElementById('appel');
 
-// ---------------- Parse KML & trouver le Placemark name == "limites" ----------------
+// ---------------- Parse KML & trouver le Placemark "limites" ----------------
 fetch(KML_URL).then(r => r.text()).then(kmlText => {
   const xml = new DOMParser().parseFromString(kmlText, "text/xml");
-  const placemarks = [...xml.querySelectorAll('Placemark')];
+  const limPm = [...xml.querySelectorAll('Placemark')].find(pm =>
+    (pm.querySelector('name')?.textContent?.trim() || '').toLowerCase() === 'limites'
+  );
 
-  const limPm = placemarks.find(pm => {
-    const name = pm.querySelector('name')?.textContent?.trim() || '';
-    return name.toLowerCase() === 'limites';
-  });
+  if (!limPm) return alert('Aucun Placemark "limites" dans le KML.');
 
-  if (!limPm) {
-    alert('Aucun Placemark nommé "limites" dans le KML.');
-    return;
-  }
+  const ring = limPm.querySelector('Polygon > outerBoundaryIs > LinearRing > coordinates');
+  if (!ring) return alert('Polygon "limites" sans <coordinates>.');
 
-  // Support Polygon ou MultiGeometry>Polygon
-  const polys = [...limPm.querySelectorAll('Polygon')];
-  if (!polys.length) {
-    alert('Le Placemark "limites" ne contient pas de <Polygon>.');
-    return;
-  }
-
-  // On ne garde que l’outerBoundary du 1er polygon (si plusieurs, on peut les fusionner — ici on prend le premier)
-  const ringNode = polys[0].querySelector('outerBoundaryIs > LinearRing > coordinates');
-  if (!ringNode) {
-    alert('Polygon "limites": pas de LinearRing outerBoundary.');
-    return;
-  }
-
-  // KML: "lon,lat[,alt] lon,lat ..."
-  const coordsLonLat = ringNode.textContent.trim().split(/\s+/).map(pair => {
+  const coordsLonLat = ring.textContent.trim().split(/\s+/).map(pair => {
     const [lon, lat] = pair.split(',').map(Number);
     return [lon, lat];
   });
-  // fermer l’anneau si ce n’est pas déjà le cas
-  const f = coordsLonLat[0], l = coordsLonLat[coordsLonLat.length-1];
-  if (!l || f[0] !== l[0] || f[1] !== l[1]) coordsLonLat.push([f[0], f[1]]);
+  const f = coordsLonLat[0], l = coordsLonLat.at(-1);
+  if (f[0] !== l[0] || f[1] !== l[1]) coordsLonLat.push([f[0], f[1]]);
 
   limitesPoly = turf.polygon([coordsLonLat]);
-
-  // Dessin Leaflet (conversion en [lat,lng])
   const coordsLatLng = coordsLonLat.map(([lon, lat]) => [lat, lon]);
   limitesLayer = L.polygon(coordsLatLng, { color:'#0a7', weight:2, fillColor:'#0f7', fillOpacity:.15 }).addTo(map);
-
-  // Bounds exactes du polygone
   limitesBounds = L.latLngBounds(coordsLatLng);
   map.fitBounds(limitesBounds, { padding:[30,30] });
 
-  // Active les boutons
   btnFit.disabled = false;
   btnRand.disabled = false;
-
-  // 👉 Tirage initial automatique
-   placeRandom();
-   
-}).catch(err => {
-  console.error('Erreur KML:', err);
-  alert('Impossible de charger le KML (chemin ou CORS).');
+  placeRandom();
 });
 
-// ---------------- Helpers ----------------
 function randomPointInsidePoly(poly, bounds, maxTries = 4000) {
-  // bounds: L.LatLngBounds
-  const minX = bounds.getWest(),  minY = bounds.getSouth();
-  const maxX = bounds.getEast(),  maxY = bounds.getNorth();
-
+  const minX = bounds.getWest(), minY = bounds.getSouth();
+  const maxX = bounds.getEast(), maxY = bounds.getNorth();
   for (let i = 0; i < maxTries; i++) {
     const lon = minX + Math.random() * (maxX - minX);
     const lat = minY + Math.random() * (maxY - minY);
-    const pt = turf.point([lon, lat]); // turf = [lon,lat]
-    if (turf.booleanPointInPolygon(pt, poly)) {
-      return L.latLng(lat, lon);      // Leaflet = [lat,lon]
-    }
+    const pt = turf.point([lon, lat]);
+    if (turf.booleanPointInPolygon(pt, poly)) return L.latLng(lat, lon);
   }
   return null;
 }
 
-// ---------------- UI ----------------
-btnFit.onclick = () => {
-  if (!limitesBounds) { alert('KML "limites" pas chargé.'); return; }
-  map.fitBounds(limitesBounds, { padding:[30,30] });
-};
+function placeRandom() {
+  if (!limitesPoly || !limitesBounds) return;
+  const ll = randomPointInsidePoly(limitesPoly, limitesBounds);
+  if (!ll) return;
+  if (marker) map.removeLayer(marker);
+  marker = L.marker(ll).addTo(map);
+  map.setView(ll, Math.max(18, map.getZoom()));
+  chosen = { x: ll.lat, y: ll.lng, time: Date.now() };
+  btnAppel.disabled = false;
+}
 
-btnRand.onclick = () => {
+btnFit.onclick  = () => limitesBounds && map.fitBounds(limitesBounds, { padding:[30,30] });
+btnRand.onclick = () => { placeRandom(); if (marker) map.flyTo(marker.getLatLng(), Math.max(18, map.getZoom())); };
 
- if (!limitesPoly || !limitesBounds) { alert('KML "limites" pas chargé.'); return; }
- placeRandom();
- if (marker) map.flyTo(marker.getLatLng(), Math.max(18, map.getZoom()));
-};
-
-
-// ---------------- (Optionnel) Appel Robot: envoi de la position choisie ----------------
+// ---------------- WebSocket ----------------
 let ws = null, retry=0, hb=null, idle=null;
 function wsConnect(){
   if (ws && (ws.readyState===WebSocket.OPEN || ws.readyState===WebSocket.CONNECTING)) return;
   ws = new WebSocket(WS_URL);
-  ws.onopen = ()=>{ retry=0; try{ ws.send(JSON.stringify({type:'hello',client:'carte-emettrice'})) }catch{}; hb=setInterval(()=>{try{ws.send(JSON.stringify({type:'ping',t:Date.now()}))}catch{}},20000); resetIdle(); };
-  ws.onmessage = ()=> resetIdle();
+  ws.onopen = ()=>{
+    retry=0;
+    try{ ws.send(JSON.stringify({type:'hello',client:'carte-emettrice'})); }catch{}
+    hb=setInterval(()=>{try{ws.send(JSON.stringify({type:'ping',t:Date.now()}))}catch{}},20000);
+    resetIdle();
+  };
+  ws.onmessage = (e)=>{
+    resetIdle();
+    try{
+      const msg = JSON.parse(e.data);
+      // --- AJOUT : suivi robot ---
+      if (msg.type === 'robot' && msg.data) {
+        const { x:lat, y:lon } = msg.data;
+        if (typeof lat !== 'number' || typeof lon !== 'number') return;
+        const ll = L.latLng(lat, lon);
+
+        if (!robotMarker) {
+          robotMarker = L.marker(ll, {
+            icon: L.icon({
+              iconUrl: "https://cdn-icons-png.flaticon.com/512/3448/3448594.png",
+              iconSize: [32, 32], iconAnchor: [16, 16]
+            })
+          }).addTo(map);
+          robotTrailCoords = [ll];
+          robotTrail = L.polyline(robotTrailCoords, { color:'#f60', weight:3, opacity:0.8 }).addTo(map);
+        } else {
+          robotMarker.setLatLng(ll);
+          robotTrailCoords.push(ll);
+          robotTrail.setLatLngs(robotTrailCoords.slice(-800));
+        }
+      }
+    }catch{}
+  };
   ws.onerror = e=> console.warn('WS error', e?.message||e);
-  ws.onclose = ()=>{ clearInterval(hb); hb=null; clearTimeout(idle); idle=null; const backoff=Math.min(10000,500*Math.pow(2,retry++)); setTimeout(wsConnect, backoff); };
+  ws.onclose = ()=>{
+    clearInterval(hb); hb=null; clearTimeout(idle); idle=null;
+    const backoff=Math.min(10000,500*Math.pow(2,retry++));
+    setTimeout(wsConnect, backoff);
+  };
   function resetIdle(){ clearTimeout(idle); idle=setTimeout(()=>{ try{ws.close()}catch{} }, 45000); }
 }
 wsConnect();
 
 function wsSend(obj){ if(!ws || ws.readyState!==WebSocket.OPEN) return false; try{ ws.send(JSON.stringify(obj)); return true; }catch{ return false; } }
 
+// ---------------- Bouton APPEL ----------------
 btnAppel.onclick = () => {
-  if (!chosen) { alert('Choisis d’abord une position aléatoire.'); return; }
+  if (!chosen) return alert('Choisis d’abord une position aléatoire.');
 
   const ok = window.confirm(
-    "⚠️ CECI EST UN APPEL D’URGENCE.\n\n" +
-    "Confirmez-vous l’envoi de l’APPEL ROBOT sur la position tirée dans \"limites\" ?"
+    "⚠️ CECI EST UN APPEL D’URGENCE.\n\nConfirmez-vous l’envoi de l’APPEL ROBOT sur la position tirée dans \"limites\" ?"
   );
   if (!ok) return;
 
-  // 1) WS “appel” (pour que la Map2D déclenche triggerAppel côté récepteur)
+  // 1) message WS
   const sent = wsSend({ type: 'appel', data: { t: Date.now(), source: 'carte-emettrice' } });
 
-  // 2) HTTP target (pour placer le robot côté récepteurs)
+  // 2) position HTTP
   fetch(API_URL, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(chosen)
@@ -190,11 +173,11 @@ btnAppel.onclick = () => {
   .then(r => r.json())
   .then(js => {
     console.log('📤 call-robot OK:', js);
-    if (!sent) alert("Position envoyée (HTTP OK), mais la WebSocket n'était pas connectée.");
+    if (!sent) alert("Position envoyée (HTTP OK), mais WS non connectée.");
   })
   .catch(err => {
     console.error('❌ call-robot KO:', err);
-    alert('Échec de l’appel HTTP (voir console).');
+    alert('Échec HTTP (voir console).');
   });
 };
 </script>
