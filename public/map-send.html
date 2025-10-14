@@ -2,7 +2,7 @@
 <html lang="fr">
 <head>
   <meta charset="UTF-8" />
-  <title>KML: zoom & point aléatoire dans "limites"</title>
+  <title>Carte émettrice + suivi robot (debug)</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="https://unpkg.com/@turf/turf@6/turf.min.js"></script>
@@ -17,47 +17,87 @@
     }
     .btn:disabled { opacity: .5; cursor: not-allowed; }
     .btn.alert { background: #ffefef; border-color: #c00; color: #900; }
+    .hud {
+      position: fixed; left: 12px; bottom: 12px; z-index: 1100;
+      background: rgba(255,255,255,.95); border: 1px solid #bbb; border-radius: 10px;
+      padding: 8px 10px; font: 14px system-ui; box-shadow: 0 2px 10px rgba(0,0,0,.15);
+    }
+    .log {
+      position: fixed; left: 12px; top: 12px; z-index: 1100; width: 36ch; max-height: 40%;
+      background: rgba(0,0,0,.75); color: #0f0; font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      padding: 10px; border-radius: 10px; overflow: auto; white-space: pre-wrap;
+    }
+    .badge { display:inline-block; padding:2px 6px; border-radius:8px; font-weight:700; }
+    .ok { background:#dff7df; color:#0a0; border:1px solid #0a0; }
+    .ko { background:#ffecec; color:#a00; border:1px solid #a00; }
   </style>
 </head>
 <body>
   <div id="map"></div>
+
   <div class="tools">
     <button id="fit" class="btn">🗺️ Zoom "limites"</button>
     <button id="rand" class="btn">🎯 Point aléatoire</button>
     <button id="appel" class="btn alert" disabled>🚨 APPEL ROBOT</button>
   </div>
 
+  <div class="hud" id="hud">
+    WS: <span id="wsState" class="badge ko">off</span>
+    · Dernier robot: <span id="robotInfo">—</span>
+  </div>
+
+  <div class="log" id="log"></div>
+
 <script>
+/* ---------- CONFIG ---------- */
+// auto local/prod (tu peux forcer si tu veux)
+const isLocal = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
+const WS_URL  = isLocal ? 'ws://localhost:3031' : 'wss://sti2d.latelier22.fr/fiber-ws/';
+const API_URL = isLocal ? 'http://localhost:3030/api/call-robot'
+                        : 'https://sti2d.latelier22.fr/fiber/api/call-robot';
 const KML_URL = 'lycee.kml';
-const WS_URL  = 'wss://sti2d.latelier22.fr/fiber-ws/';
-const API_URL = 'https://sti2d.latelier22.fr/fiber/api/call-robot';
 
-let limitesPoly = null, limitesBounds = null;
-let limitesLayer = null, marker = null, chosen = null;
-let robotMarker = null;          // --- AJOUT
-let robotTrail = null;           // --- AJOUT
-let robotTrailCoords = [];       // --- AJOUT
+/* ---------- LOGGING ---------- */
+const logEl = document.getElementById('log');
+function log(...args) {
+  const line = args.map(a => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ');
+  const ts = new Date().toLocaleTimeString();
+  console.log('[client]', ...args);
+  logEl.textContent += `[${ts}] ${line}\n`;
+  logEl.scrollTop = logEl.scrollHeight;
+}
 
+/* ---------- MAP ---------- */
 const map = L.map('map', { preferCanvas:true }).setView([48.185, -2.758], 18);
 L.tileLayer('https://{s}.tile.openstreetmap.fr/osmfr/{z}/{x}/{y}.png', {
   attribution: '© OSM France', maxZoom: 20
 }).addTo(map);
 
+let limitesPoly=null, limitesBounds=null, marker=null, chosen=null;
+
+// robot live
+let robotMarker=null;
+let robotTrail=null;
+let robotTrailCoords=[];
+let firstRobotFix = true;
+
 const btnFit   = document.getElementById('fit');
 const btnRand  = document.getElementById('rand');
 const btnAppel = document.getElementById('appel');
 
-// ---------------- Parse KML & trouver le Placemark "limites" ----------------
+const wsBadge  = document.getElementById('wsState');
+const robotInfo= document.getElementById('robotInfo');
+
+/* ---------- KML ---------- */
 fetch(KML_URL).then(r => r.text()).then(kmlText => {
   const xml = new DOMParser().parseFromString(kmlText, "text/xml");
   const limPm = [...xml.querySelectorAll('Placemark')].find(pm =>
     (pm.querySelector('name')?.textContent?.trim() || '').toLowerCase() === 'limites'
   );
-
-  if (!limPm) return alert('Aucun Placemark "limites" dans le KML.');
+  if (!limPm) { alert('Aucun Placemark "limites".'); return; }
 
   const ring = limPm.querySelector('Polygon > outerBoundaryIs > LinearRing > coordinates');
-  if (!ring) return alert('Polygon "limites" sans <coordinates>.');
+  if (!ring) { alert('Polygon "limites" sans coordinates.'); return; }
 
   const coordsLonLat = ring.textContent.trim().split(/\s+/).map(pair => {
     const [lon, lat] = pair.split(',').map(Number);
@@ -68,18 +108,25 @@ fetch(KML_URL).then(r => r.text()).then(kmlText => {
 
   limitesPoly = turf.polygon([coordsLonLat]);
   const coordsLatLng = coordsLonLat.map(([lon, lat]) => [lat, lon]);
-  limitesLayer = L.polygon(coordsLatLng, { color:'#0a7', weight:2, fillColor:'#0f7', fillOpacity:.15 }).addTo(map);
+  const layer = L.polygon(coordsLatLng, { color:'#0a7', weight:2, fillColor:'#0f7', fillOpacity:.15 }).addTo(map);
   limitesBounds = L.latLngBounds(coordsLatLng);
   map.fitBounds(limitesBounds, { padding:[30,30] });
 
   btnFit.disabled = false;
   btnRand.disabled = false;
+
+  // place un point initial
   placeRandom();
+  log('KML chargé. Boutons activés.');
+}).catch(err => {
+  console.error(err);
+  alert('Chargement KML impossible'); 
 });
 
+/* ---------- helpers ---------- */
 function randomPointInsidePoly(poly, bounds, maxTries = 4000) {
-  const minX = bounds.getWest(), minY = bounds.getSouth();
-  const maxX = bounds.getEast(), maxY = bounds.getNorth();
+  const minX = bounds.getWest(),  minY = bounds.getSouth();
+  const maxX = bounds.getEast(),  maxY = bounds.getNorth();
   for (let i = 0; i < maxTries; i++) {
     const lon = minX + Math.random() * (maxX - minX);
     const lat = minY + Math.random() * (maxY - minY);
@@ -88,97 +135,125 @@ function randomPointInsidePoly(poly, bounds, maxTries = 4000) {
   }
   return null;
 }
-
 function placeRandom() {
   if (!limitesPoly || !limitesBounds) return;
   const ll = randomPointInsidePoly(limitesPoly, limitesBounds);
-  if (!ll) return;
+  if (!ll) { log('randomPointInsidePoly → null'); return; }
   if (marker) map.removeLayer(marker);
   marker = L.marker(ll).addTo(map);
   map.setView(ll, Math.max(18, map.getZoom()));
   chosen = { x: ll.lat, y: ll.lng, time: Date.now() };
   btnAppel.disabled = false;
+  log('Point aléatoire choisi:', chosen);
 }
 
-btnFit.onclick  = () => limitesBounds && map.fitBounds(limitesBounds, { padding:[30,30] });
+/* ---------- UI ---------- */
+btnFit.onclick  = () => { if (limitesBounds) map.fitBounds(limitesBounds, { padding:[30,30] }); };
 btnRand.onclick = () => { placeRandom(); if (marker) map.flyTo(marker.getLatLng(), Math.max(18, map.getZoom())); };
 
-// ---------------- WebSocket ----------------
-let ws = null, retry=0, hb=null, idle=null;
+/* ---------- WebSocket ---------- */
+let ws=null, retry=0, hb=null, idle=null;
+function wsState(on) {
+  wsBadge.textContent = on ? 'on' : 'off';
+  wsBadge.className = 'badge ' + (on ? 'ok' : 'ko');
+}
 function wsConnect(){
   if (ws && (ws.readyState===WebSocket.OPEN || ws.readyState===WebSocket.CONNECTING)) return;
+  log('WS connect →', WS_URL);
   ws = new WebSocket(WS_URL);
+
   ws.onopen = ()=>{
-    retry=0;
-    try{ ws.send(JSON.stringify({type:'hello',client:'carte-emettrice'})); }catch{}
-    hb=setInterval(()=>{try{ws.send(JSON.stringify({type:'ping',t:Date.now()}))}catch{}},20000);
+    retry=0; wsState(true);
+    log('WS OPEN');
+    try { ws.send(JSON.stringify({type:'hello',client:'carte-emettrice'})); } catch {}
+    hb=setInterval(()=>{ try{ ws.send(JSON.stringify({type:'ping',t:Date.now()})) }catch{} }, 20000);
     resetIdle();
   };
+
   ws.onmessage = (e)=>{
     resetIdle();
-    try{
-      const msg = JSON.parse(e.data);
-      // --- AJOUT : suivi robot ---
-      if (msg.type === 'robot' && msg.data) {
-        const { x:lat, y:lon } = msg.data;
-        if (typeof lat !== 'number' || typeof lon !== 'number') return;
-        const ll = L.latLng(lat, lon);
+    let msg=null;
+    try { msg = JSON.parse(e.data); } catch {}
+    log('WS MSG:', msg);
+    if (!msg) return;
 
-        if (!robotMarker) {
-          robotMarker = L.marker(ll, {
-            icon: L.icon({
-              iconUrl: "https://cdn-icons-png.flaticon.com/512/3448/3448594.png",
-              iconSize: [32, 32], iconAnchor: [16, 16]
-            })
-          }).addTo(map);
-          robotTrailCoords = [ll];
-          robotTrail = L.polyline(robotTrailCoords, { color:'#f60', weight:3, opacity:0.8 }).addTo(map);
-        } else {
-          robotMarker.setLatLng(ll);
-          robotTrailCoords.push(ll);
-          robotTrail.setLatLngs(robotTrailCoords.slice(-800));
-        }
+    if (msg.type === 'pong') return;
+
+    // === ROBOT LIVE ===
+    if (msg.type === 'robot' && msg.data) {
+      const { x:lat, y:lon, time } = msg.data;
+      if (typeof lat !== 'number' || typeof lon !== 'number') {
+        log('robot msg ignoré: coords invalides', msg.data);
+        return;
       }
-    }catch{}
+      const ll = L.latLng(lat, lon);
+      if (!robotMarker) {
+        robotMarker = L.marker(ll, {
+          icon: L.icon({
+            iconUrl: "https://cdn-icons-png.flaticon.com/512/3448/3448594.png",
+            iconSize: [32, 32], iconAnchor: [16, 16]
+          })
+        }).addTo(map);
+        robotTrailCoords = [ll];
+        robotTrail = L.polyline(robotTrailCoords, { weight:3, opacity:.85 }).addTo(map);
+        if (firstRobotFix) {
+          firstRobotFix = false;
+          map.flyTo(ll, 19);
+        }
+      } else {
+        robotMarker.setLatLng(ll);
+        robotTrailCoords.push(ll);
+        robotTrail.setLatLngs(robotTrailCoords.slice(-800));
+      }
+      robotInfo.textContent = `${lat.toFixed(6)}, ${lon.toFixed(6)} @ ${time ? new Date(time).toLocaleTimeString() : 'now'}`;
+      return;
+    }
+
+    // === TARGET (optionnel: tu peux afficher une cible ici si tu veux) ===
+    if (msg.type === 'target') {
+      log('target reçu:', msg.data);
+    }
+
+    // === APPEL ===
+    if (msg.type === 'appel') {
+      log('appel reçu:', msg.data);
+    }
   };
-  ws.onerror = e=> console.warn('WS error', e?.message||e);
+
+  ws.onerror = (e)=> { log('WS ERROR:', e?.message || e); };
   ws.onclose = ()=>{
+    wsState(false);
+    log('WS CLOSE');
     clearInterval(hb); hb=null; clearTimeout(idle); idle=null;
-    const backoff=Math.min(10000,500*Math.pow(2,retry++));
+    const backoff = Math.min(10000, 500*Math.pow(2,retry++));
     setTimeout(wsConnect, backoff);
   };
+
   function resetIdle(){ clearTimeout(idle); idle=setTimeout(()=>{ try{ws.close()}catch{} }, 45000); }
 }
 wsConnect();
 
-function wsSend(obj){ if(!ws || ws.readyState!==WebSocket.OPEN) return false; try{ ws.send(JSON.stringify(obj)); return true; }catch{ return false; } }
+function wsSend(obj){
+  if(!ws || ws.readyState!==WebSocket.OPEN) { log('WS send FAIL (not open)', obj); return false; }
+  try { ws.send(JSON.stringify(obj)); log('WS send OK', obj); return true; }
+  catch(e) { log('WS send ERROR', e); return false; }
+}
 
-// ---------------- Bouton APPEL ----------------
+/* ---------- Bouton APPEL ---------- */
 btnAppel.onclick = () => {
-  if (!chosen) return alert('Choisis d’abord une position aléatoire.');
-
-  const ok = window.confirm(
-    "⚠️ CECI EST UN APPEL D’URGENCE.\n\nConfirmez-vous l’envoi de l’APPEL ROBOT sur la position tirée dans \"limites\" ?"
-  );
+  if (!chosen) { alert('Choisis un point.'); return; }
+  const ok = window.confirm("⚠️ APPEL D’URGENCE\nConfirmez l’envoi ?");
   if (!ok) return;
 
-  // 1) message WS
   const sent = wsSend({ type: 'appel', data: { t: Date.now(), source: 'carte-emettrice' } });
 
-  // 2) position HTTP
   fetch(API_URL, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(chosen)
   })
   .then(r => r.json())
-  .then(js => {
-    console.log('📤 call-robot OK:', js);
-    if (!sent) alert("Position envoyée (HTTP OK), mais WS non connectée.");
-  })
-  .catch(err => {
-    console.error('❌ call-robot KO:', err);
-    alert('Échec HTTP (voir console).');
-  });
+  .then(js => { log('HTTP call-robot OK', js); if (!sent) alert("HTTP OK, WS non connectée."); })
+  .catch(err => { log('HTTP call-robot ERROR', err); alert('Échec HTTP (voir debug).'); });
 };
 </script>
 </body>
