@@ -12,6 +12,7 @@ import { CharactersGroup } from "./CharactersGroup";
 export function Scene({ pathPoints, mapData }) {
   const [thirdPerson, setThirdPerson] = useState(false);
   const [cameraPosition] = useState([0, 3.9, 6.21]); // setCameraPosition supprimé
+  const [toGeo, setToGeo] = useState(null);
 
   useEffect(() => {
     const handler = (e) => {
@@ -29,7 +30,7 @@ export function Scene({ pathPoints, mapData }) {
       <Ground />
       <KmlExtrusions />
       <CharactersGroup mapData={mapData} nRemi={20} nWoman={20} />
-      <Car pathPoints={pathPoints} thirdPerson={thirdPerson} />
+      <Car pathPoints={pathPoints} thirdPerson={thirdPerson}  toGeo={toGeo}/>
     </Suspense>
   );
 }

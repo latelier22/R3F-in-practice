@@ -329,16 +329,25 @@ export function Map2D({ onPathReady, onMapReady, onNodeSelect }) {
           }
         });
 
-        // notifier 3D quand prêt
-        if (cbRef.current.onMapReady && map.__originA && map.__toLocal) {
-          cbRef.current.onMapReady({
-            nodes: allNodes.map(n => {
-              const v = map.__toLocal(n.lat, n.lon);
-              return { id: n.id, x: v.x, z: -v.y };
-            }),
-            links: allLinks
-          });
-        }
+        // ✅ notifier la 3D quand la carte est prête
+if (cbRef.current.onMapReady && map.__originA && map.__toLocal) {
+  // --- fonction inverse : (x,z) → {lat, lon}
+  const toGeo = (X, Z) => {
+    // createGeoConverter retourne { f, inv }
+    const v = map.__toLocal.inv(X, -Z); // attention z = -y
+    return { lat: v.lat, lon: v.lon };
+  };
+
+  cbRef.current.onMapReady({
+    nodes: allNodes.map(n => {
+      const v = map.__toLocal(n.lat, n.lon);
+      return { id: n.id, x: v.x, z: -v.y };
+    }),
+    links: allLinks,
+    toGeo,                // ← ajout important pour que la 3D puisse renvoyer sa position
+    origin: map.__originA // facultatif, mais utile
+  });
+}
 
         function nodeTo3D(id) {
           const n = allNodes.find(nn => nn.id === id);
