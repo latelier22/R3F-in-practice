@@ -29,17 +29,17 @@ export function Ground() {
 
   return (
     <>
-      <mesh ref={meshRef2} position={[0, -0.01, -1.325]} rotation-x={-Math.PI * 0.5}>
-        <planeGeometry args={[12, 12]} />
+      <mesh ref={meshRef2} position={[1, -1, -1.32]} rotation-x={-Math.PI * 0.5}  rotation-z={-0.079}>
+        <planeGeometry args={[13, 13]} />
         <meshBasicMaterial
           opacity={0.325}
-          alphaMap={gridMap}
+          // alphaMap={gridMap}
           transparent={true}
-          color={"white"}
+          color={"lightgray"}
         />
       </mesh>
 
-      <mesh
+      {/* <mesh
         ref={meshRef}
         position={[-2.285, -0.015, -1.325]}
         rotation-x={-Math.PI * 0.5}
@@ -47,8 +47,8 @@ export function Ground() {
       >
         <circleGeometry args={[6.12, 150]} />
         <MeshReflectorMaterial
-          aoMap={aoMap}
-          alphaMap={alphaMap}
+          // aoMap={aoMap}
+          // alphaMap={alphaMap}
           transparent={true}
           color={[0.5, 0.5, 0.5]}
           envMapIntensity={0.35}
@@ -68,7 +68,7 @@ export function Ground() {
           debug={0}
           reflectorOffset={0.02}
         />
-      </mesh>
+      </mesh> */}
     </>
   );
 }

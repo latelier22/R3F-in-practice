@@ -28,12 +28,14 @@ export function Scene({ pathPoints, mapData }) {
 
   return (
     <Suspense fallback={null}>
-      <Environment files={process.env.PUBLIC_URL + "/textures/envmap.hdr"} background={"both"} />
+      <ambientLight intensity={0.6} />
+<directionalLight position={[5, 10, 5]} intensity={1.2} />
+
       <PerspectiveCamera makeDefault position={cameraPosition} fov={40} />
       {!thirdPerson && <OrbitControls target={[0, 0, 0]} />}
       <Ground />
       <KmlExtrusions />
-      <CharactersGroup mapData={mapData} nRemi={20} nWoman={20} />
+      <CharactersGroup mapData={mapData} nRemi={5} nWoman={5} />
       <Car pathPoints={pathPoints} thirdPerson={thirdPerson}  toGeo={toGeo}/>
     </Suspense>
   );

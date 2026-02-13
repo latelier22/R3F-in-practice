@@ -41,7 +41,7 @@ export function Car({ pathPoints, toGeo, telemetryUrl = "https://sti2d.latelier2
   // init modèle
   useEffect(() => {
     if (!model) return;
-    model.scale.set(0.0003, 0.0003, 0.0003); // ~0.5 m
+    model.scale.set(0.0006, 0.0006, 0.0006); // ~0.5 m
     model.children[0]?.position.set(-365, -18, -67);
   }, [model]);
 
