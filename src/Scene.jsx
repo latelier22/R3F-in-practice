@@ -1,18 +1,13 @@
-import {
-  Environment,
-  OrbitControls,
-  PerspectiveCamera,
-} from "@react-three/drei";
+import { OrbitControls, PerspectiveCamera } from "@react-three/drei";
 import { Suspense, useEffect, useState } from "react";
 import { Ground } from "./Ground";
 import { KmlExtrusions } from "./KmlExtrusions";
 import { Car } from "./Car";
 import { CharactersGroup } from "./CharactersGroup";
 
-export function Scene({ pathPoints, mapData }) {
+export function Scene({ pathPoints, mapData, robotGeo }) {
   const [thirdPerson, setThirdPerson] = useState(false);
-  const [cameraPosition] = useState([0, 3.9, 6.21]); // setCameraPosition supprimé
-  const [toGeo, setToGeo] = useState(null);
+  const [cameraPosition] = useState([0, 3.9, 6.21]);
 
   useEffect(() => {
     const handler = (e) => {
@@ -22,21 +17,25 @@ export function Scene({ pathPoints, mapData }) {
     return () => window.removeEventListener("keydown", handler);
   }, []);
 
-    useEffect(() => {
-    if (mapData?.toGeo) setToGeo(() => mapData.toGeo);
-  }, [mapData]);
-
   return (
     <Suspense fallback={null}>
-      <ambientLight intensity={0.6} />
+       <ambientLight intensity={0.6} />
 <directionalLight position={[5, 10, 5]} intensity={1.2} />
-
       <PerspectiveCamera makeDefault position={cameraPosition} fov={40} />
       {!thirdPerson && <OrbitControls target={[0, 0, 0]} />}
+
       <Ground />
       <KmlExtrusions />
+
       <CharactersGroup mapData={mapData} nRemi={5} nWoman={5} />
-      <Car pathPoints={pathPoints} thirdPerson={thirdPerson}  toGeo={toGeo}/>
+
+      <Car
+        pathPoints={pathPoints}
+        thirdPerson={thirdPerson}
+        toGeo={mapData?.toGeo}
+        toLocal={mapData?.toLocal}
+        robotGeo={robotGeo}
+      />
     </Suspense>
   );
 }
