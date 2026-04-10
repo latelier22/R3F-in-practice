@@ -10,11 +10,20 @@ export default function App() {
   const [lastPath, setLastPath] = useState(null);
   const [mapData, setMapData] = useState(null);
 
-  // ---- robot state (depuis serveur)
-  const [robotGeo, setRobotGeo] = useState(null);        // {lat, lon}
-  const [robotLocal3D, setRobotLocal3D] = useState(null); // {x, z} (coords 3D)
+  // -----------------------------
+  // Position robot côté serveur
+  // -----------------------------
+  // robotGeo = position géographique réelle mémorisée par le serveur
+  // ex: { lat, lon, heading, time }
+  const [robotGeo, setRobotGeo] = useState(null);
 
-  // ---- styles
+  // robotLocal3D = même position, mais convertie en coordonnées de la scène 3D
+  // ex: { x, z }
+  const [robotLocal3D, setRobotLocal3D] = useState(null);
+
+  // -----------------------------
+  // Styles adaptatifs
+  // -----------------------------
   const isMobile = window.innerWidth < 768;
   const isLandscape = window.innerWidth > window.innerHeight;
 
@@ -60,73 +69,109 @@ export default function App() {
     cursor: "pointer",
   };
 
-  const handleNodeSelect = (id) => {
-    console.log("✅ Node sélectionné :", id);
-  };
-
-  const handleRetour = () => {
-    if (lastPath && lastPath.length > 0) {
-      const retour = [...lastPath].reverse();
-      console.log("↩️ Retour");
-      setPathPoints(retour);
-    } else {
-      alert("⚠️ Aucun trajet précédent !");
-    }
-  };
-
-  const handleCamera = () => {
-    window.dispatchEvent(new KeyboardEvent("keydown", { key: "k" }));
-  };
-
-  const handleAppel = () => {
-    if (typeof window.callAppelFromButton === "function") {
-      window.callAppelFromButton();
-    } else {
-      alert("⚠️ Carte pas prête (callAppelFromButton manquant)");
-    }
-  };
-
-  // ---- 1) poll serveur : /robot-last
+  // -----------------------------
+  // Chargement périodique de la position serveur
+  // -----------------------------
+  // On récupère la dernière position réelle du robot.
+  // IMPORTANT :
+  // On veut connaître l'état partagé entre navigateurs.
   useEffect(() => {
     let alive = true;
 
     async function tick() {
       try {
-        const r = await fetch("https://sti2d.latelier22.fr/fiber/api/robot-last", { cache: "no-store" });
+        const r = await fetch("https://sti2d.latelier22.fr/fiber/api/robot-last", {
+          cache: "no-store",
+        });
         const j = await r.json();
+
         if (!alive) return;
 
         if (j?.ok && j?.robot && typeof j.robot.x === "number" && typeof j.robot.y === "number") {
-          const lat = j.robot.x;
-          const lon = j.robot.y;
-          setRobotGeo({ lat, lon });
-          console.log("[App] ✅ robot-last", { lat, lon, time: j.robot.time });
+          setRobotGeo({
+            lat: j.robot.x,
+            lon: j.robot.y,
+            heading: typeof j.robot.heading === "number" ? j.robot.heading : null,
+            time: j.robot.time ?? null,
+          });
+
+          console.log("[App] robot-last OK", j.robot);
         } else {
-          console.log("[App] ⚠️ robot-last ok=false");
+          console.log("[App] robot-last : pas de robot dispo");
         }
       } catch (e) {
-        console.log("[App] ❌ robot-last error", String(e));
+        console.log("[App] robot-last ERROR", String(e));
       }
     }
 
     tick();
     const id = setInterval(tick, 2000);
-    return () => { alive = false; clearInterval(id); };
+
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
   }, []);
 
-  // ---- 2) quand mapData (toLocal) est prêt + robotGeo reçu → calcule robotLocal3D {x,z}
+  // -----------------------------
+  // Conversion géo -> 3D
+  // -----------------------------
+  // Dès qu'on a mapData.toLocal + robotGeo, on convertit la position serveur
+  // en coordonnées locales de scène.
   useEffect(() => {
     if (!robotGeo) return;
     if (!mapData?.toLocal) return;
 
-    const v = mapData.toLocal(robotGeo.lat, robotGeo.lon); // Vector2(x,y) où y = north+
-    const local3D = { x: v.x, z: -v.y }; // 3D: z = -north
+    const v = mapData.toLocal(robotGeo.lat, robotGeo.lon);
+    const local3D = { x: v.x, z: -v.y };
+
     setRobotLocal3D(local3D);
 
-    console.log("[App] ✅ robotLocal3D computed", local3D);
+    console.log("[App] robotLocal3D =", local3D);
   }, [robotGeo, mapData]);
 
-  // orientation reload (comme tu faisais)
+  // -----------------------------
+  // Sélection de nœud
+  // -----------------------------
+  const handleNodeSelect = (id) => {
+    console.log("✅ Node sélectionné :", id);
+  };
+
+  // -----------------------------
+  // Retour local simple
+  // -----------------------------
+  // Ici on garde ton comportement existant :
+  // on inverse le dernier chemin connu dans CE navigateur.
+  // Plus tard, on pourra remplacer ça par un vrai recalcul start -> end.
+  const handleRetour = () => {
+  if (typeof window.callReturnToBase === "function") {
+    window.callReturnToBase();
+  } else {
+    alert("⚠️ Retour vers la base indisponible");
+  }
+};
+
+  // -----------------------------
+  // Toggle caméra
+  // -----------------------------
+  const handleCamera = () => {
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "k" }));
+  };
+
+  // -----------------------------
+  // Appel
+  // -----------------------------
+  const handleAppel = () => {
+    if (typeof window.callAppelFromButton === "function") {
+      window.callAppelFromButton();
+    } else {
+      alert("⚠️ Carte pas prête");
+    }
+  };
+
+  // -----------------------------
+  // Rechargement si changement orientation mobile
+  // -----------------------------
   useEffect(() => {
     const resize = () => window.location.reload();
     window.addEventListener("orientationchange", resize);
@@ -135,17 +180,24 @@ export default function App() {
 
   return (
     <div style={containerStyle}>
-      {/* 2D */}
+      {/* -----------------------------
+          Carte 2D
+         ----------------------------- */}
       <div style={mapStyle}>
         <Map2D
           robotLocal3D={robotLocal3D}
-          onPathReady={(pts) => { setPathPoints(pts); setLastPath(pts); }}
+          onPathReady={(pts) => {
+            setPathPoints(pts);
+            setLastPath(pts);
+          }}
           onMapReady={(data) => setMapData(data)}
           onNodeSelect={handleNodeSelect}
         />
       </div>
 
-      {/* 3D */}
+      {/* -----------------------------
+          Scène 3D
+         ----------------------------- */}
       <div style={sceneStyle}>
         <Canvas shadows>
           <Physics gravity={[0, -9.81, 0]}>
@@ -159,7 +211,6 @@ export default function App() {
           </Physics>
         </Canvas>
 
-        {/* Boutons */}
         <div style={buttonPanel}>
           <button style={btn} onClick={handleCamera}>🎥 CAMÉRA</button>
           <button style={btn} onClick={handleAppel}>🚑 APPEL</button>

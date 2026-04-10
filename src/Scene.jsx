@@ -11,7 +11,7 @@ export function Scene({ pathPoints, mapData, robotGeo }) {
 
   useEffect(() => {
     const handler = (e) => {
-      if (e.key === "k") setThirdPerson(t => !t);
+      if (e.key === "k") setThirdPerson((t) => !t);
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
@@ -19,19 +19,18 @@ export function Scene({ pathPoints, mapData, robotGeo }) {
 
   return (
     <Suspense fallback={null}>
-       <ambientLight intensity={0.6} />
-<directionalLight position={[5, 10, 5]} intensity={1.2} />
+      <ambientLight intensity={0.6} />
+      <directionalLight position={[5, 10, 5]} intensity={1.2} />
+
       <PerspectiveCamera makeDefault position={cameraPosition} fov={40} />
       {!thirdPerson && <OrbitControls target={[0, 0, 0]} />}
 
       <Ground />
       <KmlExtrusions />
-
       <CharactersGroup mapData={mapData} nRemi={5} nWoman={5} />
 
       <Car
         pathPoints={pathPoints}
-        thirdPerson={thirdPerson}
         toGeo={mapData?.toGeo}
         toLocal={mapData?.toLocal}
         robotGeo={robotGeo}
