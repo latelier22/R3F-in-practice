@@ -4,8 +4,17 @@ import { Ground } from "./Ground";
 import { KmlExtrusions } from "./KmlExtrusions";
 import { Car } from "./Car";
 import { CharactersGroup } from "./CharactersGroup";
+import { ObstacleCube } from "./ObstacleCube";
 
-export function Scene({ pathPoints, mapData, robotGeo }) {
+export function Scene({
+  pathPoints,
+  mapData,
+  robotGeo,
+  activeObstacle,
+  onObstacleDetected,
+  onPathComplete,
+  ignoreObstacle = false,
+}) {
   const [thirdPerson, setThirdPerson] = useState(false);
   const [cameraPosition] = useState([0, 3.9, 6.21]);
 
@@ -28,12 +37,17 @@ export function Scene({ pathPoints, mapData, robotGeo }) {
       <Ground />
       <KmlExtrusions />
       <CharactersGroup mapData={mapData} nRemi={5} nWoman={5} />
+      <ObstacleCube obstacle={activeObstacle} />
 
       <Car
         pathPoints={pathPoints}
         toGeo={mapData?.toGeo}
         toLocal={mapData?.toLocal}
         robotGeo={robotGeo}
+        activeObstacle={activeObstacle}
+        onObstacleDetected={onObstacleDetected}
+        onPathComplete={onPathComplete}
+        ignoreObstacle={ignoreObstacle}
       />
     </Suspense>
   );

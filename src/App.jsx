@@ -1,29 +1,99 @@
 import "./index.css";
 import { Canvas } from "@react-three/fiber";
 import { Physics } from "@react-three/cannon";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Scene } from "./Scene";
-import { Map2D } from "./Map2D-old";
+import { Map2D } from "./Map2D";
+
+function makeLinkKey(a, b) {
+  return [a, b].sort().join("|");
+}
+
+function randInt(min, max) {
+  return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+function distancePointToSegment2D(px, pz, ax, az, bx, bz) {
+  const abx = bx - ax;
+  const abz = bz - az;
+  const apx = px - ax;
+  const apz = pz - az;
+  const abLenSq = abx * abx + abz * abz;
+
+  if (abLenSq <= 1e-9) {
+    return Math.hypot(px - ax, pz - az);
+  }
+
+  let t = (apx * abx + apz * abz) / abLenSq;
+  t = Math.max(0, Math.min(1, t));
+
+  const cx = ax + abx * t;
+  const cz = az + abz * t;
+  return Math.hypot(px - cx, pz - cz);
+}
+
+function computeImpactedLinkKeys(mapData, obstacle, extraClearance = 0.3) {
+  if (!mapData?.links?.length || !mapData?.nodes?.length || !obstacle?.position) {
+    return [];
+  }
+
+  const nodesById = new Map(mapData.nodes.map((node) => [node.id, node]));
+  const impacted = new Set();
+  const px = obstacle.position.x;
+  const pz = obstacle.position.z;
+  const primaryKey = obstacle.linkKey;
+
+  for (const link of mapData.links) {
+    const fromNode = nodesById.get(link.from);
+    const toNode = nodesById.get(link.to);
+    if (!fromNode || !toNode) continue;
+
+    const linkKey = makeLinkKey(link.from, link.to);
+    const distance = distancePointToSegment2D(
+      px,
+      pz,
+      fromNode.x,
+      fromNode.z,
+      toNode.x,
+      toNode.z
+    );
+
+    if (distance <= extraClearance) {
+      impacted.add(linkKey);
+    }
+  }
+
+  if (primaryKey) {
+    impacted.add(primaryKey);
+  }
+
+  return Array.from(impacted);
+}
 
 export default function App() {
   const [pathPoints, setPathPoints] = useState([]);
-  const [lastPath, setLastPath] = useState(null);
   const [mapData, setMapData] = useState(null);
-
-  // -----------------------------
-  // Position robot côté serveur
-  // -----------------------------
-  // robotGeo = position géographique réelle mémorisée par le serveur
-  // ex: { lat, lon, heading, time }
   const [robotGeo, setRobotGeo] = useState(null);
-
-  // robotLocal3D = même position, mais convertie en coordonnées de la scène 3D
-  // ex: { x, z }
   const [robotLocal3D, setRobotLocal3D] = useState(null);
 
-  // -----------------------------
-  // Styles adaptatifs
-  // -----------------------------
+  const [routeInfo, setRouteInfo] = useState({
+    nodeIds: [],
+    targetId: null,
+  });
+
+  const [activeObstacle, setActiveObstacle] = useState(null);
+  const [blockedLinks, setBlockedLinks] = useState([]);
+  const blockedLinksRef = useRef([]);
+
+  const [rerouteState, setRerouteState] = useState(null);
+  // null | { phase: 'backtrack' | 'detour', resumeNodeId: string, targetId: string, blockedLinkKeys: string[] }
+
+  const spawnObstacleEnabledRef = useRef(true);
+
+  useEffect(() => {
+    blockedLinksRef.current = blockedLinks;
+  }, [blockedLinks]);
+
   const isMobile = window.innerWidth < 768;
   const isLandscape = window.innerWidth > window.innerHeight;
 
@@ -69,12 +139,6 @@ export default function App() {
     cursor: "pointer",
   };
 
-  // -----------------------------
-  // Chargement périodique de la position serveur
-  // -----------------------------
-  // On récupère la dernière position réelle du robot.
-  // IMPORTANT :
-  // On veut connaître l'état partagé entre navigateurs.
   useEffect(() => {
     let alive = true;
 
@@ -94,10 +158,6 @@ export default function App() {
             heading: typeof j.robot.heading === "number" ? j.robot.heading : null,
             time: j.robot.time ?? null,
           });
-
-          console.log("[App] robot-last OK", j.robot);
-        } else {
-          console.log("[App] robot-last : pas de robot dispo");
         }
       } catch (e) {
         console.log("[App] robot-last ERROR", String(e));
@@ -113,54 +173,152 @@ export default function App() {
     };
   }, []);
 
-  // -----------------------------
-  // Conversion géo -> 3D
-  // -----------------------------
-  // Dès qu'on a mapData.toLocal + robotGeo, on convertit la position serveur
-  // en coordonnées locales de scène.
   useEffect(() => {
     if (!robotGeo) return;
     if (!mapData?.toLocal) return;
 
     const v = mapData.toLocal(robotGeo.lat, robotGeo.lon);
-    const local3D = { x: v.x, z: -v.y };
-
-    setRobotLocal3D(local3D);
-
-    console.log("[App] robotLocal3D =", local3D);
+    setRobotLocal3D({ x: v.x, z: -v.y });
   }, [robotGeo, mapData]);
 
-  // -----------------------------
-  // Sélection de nœud
-  // -----------------------------
-  const handleNodeSelect = (id) => {
+  const handleNodeSelect = useCallback((id) => {
     console.log("✅ Node sélectionné :", id);
+    spawnObstacleEnabledRef.current = true;
+    setActiveObstacle(null);
+    setBlockedLinks([]);
+    setRerouteState(null);
+  }, []);
+
+  const handlePathReady = useCallback(
+    (payload) => {
+      if (Array.isArray(payload)) {
+        setPathPoints(payload);
+        setRouteInfo({ nodeIds: [], targetId: null });
+        return;
+      }
+
+      const pts = payload?.pathPoints || [];
+      const nodeIds = payload?.nodeIds || [];
+      const targetId = payload?.targetId || null;
+
+      setPathPoints(pts);
+      setRouteInfo({ nodeIds, targetId });
+
+      if (rerouteState?.phase === "detour") {
+        setRerouteState(null);
+      }
+
+      if (!mapData) return;
+      if (!nodeIds || nodeIds.length < 2) return;
+      if (!spawnObstacleEnabledRef.current) return;
+      if (rerouteState) return;
+
+      const minSegIdx = nodeIds.length >= 4 ? 1 : 0;
+      const maxSegIdx = nodeIds.length - 2;
+      if (maxSegIdx < minSegIdx) return;
+
+      const segIdx = randInt(minSegIdx, maxSegIdx);
+      const fromId = nodeIds[segIdx];
+      const toId = nodeIds[segIdx + 1];
+      const linkKey = makeLinkKey(fromId, toId);
+
+      if (blockedLinksRef.current.includes(linkKey)) return;
+
+      const fromNode = mapData.nodes.find((n) => n.id === fromId);
+      const toNode = mapData.nodes.find((n) => n.id === toId);
+      if (!fromNode || !toNode) return;
+
+      setActiveObstacle({
+        id: `${linkKey}-${Date.now()}`,
+        fromId,
+        toId,
+        linkKey,
+        clearance: 0.3,
+        position: {
+          x: fromNode.x + (toNode.x - fromNode.x) * 0.5,
+          y: 0.18,
+          z: fromNode.z + (toNode.z - fromNode.z) * 0.5,
+        },
+      });
+
+      spawnObstacleEnabledRef.current = false;
+    },
+    [mapData, rerouteState]
+  );
+
+  const handleObstacleDetected = useCallback(
+    (payload) => {
+      if (!activeObstacle || !mapData || !routeInfo.targetId) return;
+
+      const impactedKeys = computeImpactedLinkKeys(
+        mapData,
+        activeObstacle,
+        activeObstacle.clearance ?? 0.3
+      );
+
+      const fallbackKeys = [payload?.blockedLinkKey, activeObstacle.linkKey].filter(Boolean);
+      const blockedLinkKeys = Array.from(new Set([...impactedKeys, ...fallbackKeys]));
+
+      setBlockedLinks((prev) => Array.from(new Set([...prev, ...blockedLinkKeys])));
+
+      const prevNode = mapData.nodes.find((n) => n.id === activeObstacle.fromId);
+      if (!prevNode) return;
+
+      setRerouteState({
+        phase: "backtrack",
+        resumeNodeId: activeObstacle.fromId,
+        targetId: routeInfo.targetId,
+        blockedLinkKeys,
+      });
+
+      // Retour physique vers le nœud précédent AVANT le nouveau Dijkstra.
+      setPathPoints([{ x: prevNode.x, z: prevNode.z }]);
+      spawnObstacleEnabledRef.current = false;
+    },
+    [activeObstacle, mapData, routeInfo.targetId]
+  );
+
+  const handleCarPathComplete = useCallback(() => {
+    setRerouteState((prev) => {
+      if (!prev) return prev;
+      if (prev.phase === "backtrack") {
+        return { ...prev, phase: "detour" };
+      }
+      return prev;
+    });
+  }, []);
+
+  useEffect(() => {
+    if (rerouteState?.phase !== "detour") return;
+
+    const id = requestAnimationFrame(() => {
+      setTimeout(() => {
+        window.callAppelFromButton?.();
+      }, 0);
+    });
+
+    return () => cancelAnimationFrame(id);
+  }, [rerouteState?.phase, blockedLinks.join("|")]);
+
+  const handleResetObstacles = useCallback(() => {
+    setActiveObstacle(null);
+    setBlockedLinks([]);
+    setRerouteState(null);
+    spawnObstacleEnabledRef.current = true;
+  }, []);
+
+  const handleRetour = () => {
+    if (typeof window.callReturnToBase === "function") {
+      window.callReturnToBase();
+    } else {
+      alert("⚠️ Retour vers la base indisponible");
+    }
   };
 
-  // -----------------------------
-  // Retour local simple
-  // -----------------------------
-  // Ici on garde ton comportement existant :
-  // on inverse le dernier chemin connu dans CE navigateur.
-  // Plus tard, on pourra remplacer ça par un vrai recalcul start -> end.
-  const handleRetour = () => {
-  if (typeof window.callReturnToBase === "function") {
-    window.callReturnToBase();
-  } else {
-    alert("⚠️ Retour vers la base indisponible");
-  }
-};
-
-  // -----------------------------
-  // Toggle caméra
-  // -----------------------------
   const handleCamera = () => {
     window.dispatchEvent(new KeyboardEvent("keydown", { key: "k" }));
   };
 
-  // -----------------------------
-  // Appel
-  // -----------------------------
   const handleAppel = () => {
     if (typeof window.callAppelFromButton === "function") {
       window.callAppelFromButton();
@@ -169,9 +327,6 @@ export default function App() {
     }
   };
 
-  // -----------------------------
-  // Rechargement si changement orientation mobile
-  // -----------------------------
   useEffect(() => {
     const resize = () => window.location.reload();
     window.addEventListener("orientationchange", resize);
@@ -180,24 +335,18 @@ export default function App() {
 
   return (
     <div style={containerStyle}>
-      {/* -----------------------------
-          Carte 2D
-         ----------------------------- */}
       <div style={mapStyle}>
         <Map2D
           robotLocal3D={robotLocal3D}
-          onPathReady={(pts) => {
-            setPathPoints(pts);
-            setLastPath(pts);
-          }}
+          blockedLinks={blockedLinks}
+          activeObstacle={activeObstacle}
+          forcedStartNodeId={rerouteState?.phase === "detour" ? rerouteState.resumeNodeId : null}
+          onPathReady={handlePathReady}
           onMapReady={(data) => setMapData(data)}
           onNodeSelect={handleNodeSelect}
         />
       </div>
 
-      {/* -----------------------------
-          Scène 3D
-         ----------------------------- */}
       <div style={sceneStyle}>
         <Canvas shadows>
           <Physics gravity={[0, -9.81, 0]}>
@@ -206,6 +355,10 @@ export default function App() {
                 pathPoints={pathPoints}
                 mapData={mapData}
                 robotGeo={robotGeo}
+                activeObstacle={activeObstacle}
+                onObstacleDetected={handleObstacleDetected}
+                onPathComplete={handleCarPathComplete}
+                ignoreObstacle={rerouteState?.phase === "backtrack"}
               />
             )}
           </Physics>
@@ -215,6 +368,7 @@ export default function App() {
           <button style={btn} onClick={handleCamera}>🎥 CAMÉRA</button>
           <button style={btn} onClick={handleAppel}>🚑 APPEL</button>
           <button style={btn} onClick={handleRetour}>🔙 RETOUR</button>
+          <button style={btn} onClick={handleResetObstacles}>🧱 RESET OBS</button>
         </div>
       </div>
     </div>
