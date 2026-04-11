@@ -219,14 +219,32 @@ export function Car({
       t = t + tStep * (0.5 + 0.5 * turnFactor);
 
       if (t >= 1) {
-        if (idxRef.current < pts.length - 2) {
-          idxRef.current += 1;
-          t = 0;
-        } else {
-          movingRef.current = false;
-          t = 1;
-        }
-      }
+  if (idxRef.current < pts.length - 2) {
+    idxRef.current += 1;
+    t = 0;
+  } else {
+    movingRef.current = false;
+    t = 1;
+
+    // force la position finale immédiatement
+    const finalPos = p2.clone();
+    ref.current.position.copy(finalPos);
+
+    if (typeof toGeo === "function") {
+      const headingDeg = THREE.MathUtils.radToDeg(ref.current.rotation.y);
+      const { lat, lon } = toGeo(finalPos.x, finalPos.z);
+
+      lastTelemAtRef.current = performance.now();
+      lastTelemPosRef.current = {
+        x: finalPos.x,
+        z: finalPos.z,
+        t: lastTelemAtRef.current,
+      };
+
+      postTelemetry(lat, lon, headingDeg, 0);
+    }
+  }
+}
 
       tRef.current = t;
     }
