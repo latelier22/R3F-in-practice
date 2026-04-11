@@ -3,7 +3,7 @@ import { Canvas } from "@react-three/fiber";
 import { Physics } from "@react-three/cannon";
 import { useEffect, useState } from "react";
 import { Scene } from "./Scene";
-import { Map2D } from "./Map2D";
+import { Map2D } from "./Map2D-old";
 
 export default function App() {
   const [pathPoints, setPathPoints] = useState([]);
