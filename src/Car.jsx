@@ -17,46 +17,29 @@ export function Car({
     process.env.PUBLIC_URL + "/models/car.glb"
   ).scene;
 
-  // ------------------------------------------------
-  // Ces refs pilotent le mouvement réel du véhicule
-  // ------------------------------------------------
   const pathRef = useRef([]);
   const idxRef = useRef(0);
   const tRef = useRef(0);
   const movingRef = useRef(false);
 
-  // ------------------------------------------------
-  // Cette ref sert à savoir si on a déjà initialisé
-  // la position du robot depuis le serveur.
-  // ------------------------------------------------
   const bootstrappedFromServerRef = useRef(false);
 
-  // ------------------------------------------------
-  // Caméra
-  // ------------------------------------------------
   const [camMode, setCamMode] = useState(0);
 
-  // ------------------------------------------------
-  // Télémétrie
-  // ------------------------------------------------
   const lastTelemAtRef = useRef(0);
   const lastTelemPosRef = useRef({ x: null, z: null, t: 0 });
 
-  const baseSpeed = 0.004;
+  const worldSpeed = 0.75;
   const baseRotLerp = 0.12;
+  const POINT_EPS = 0.03;
+  const SEGMENT_EPS = 1e-6;
 
-  // ------------------------------------------------
-  // Initialisation modèle
-  // ------------------------------------------------
   useEffect(() => {
     if (!model) return;
     model.scale.set(0.0006, 0.0006, 0.0006);
     model.children[0]?.position.set(-365, -18, -67);
   }, [model]);
 
-  // ------------------------------------------------
-  // Toggle caméra avec K
-  // ------------------------------------------------
   useEffect(() => {
     const onKey = (e) => {
       if (e.key.toLowerCase() === "k") {
@@ -68,42 +51,29 @@ export function Car({
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  // ------------------------------------------------
-  // Envoi télémétrie au serveur
-  // ------------------------------------------------
-  const postTelemetry = useCallback((lat, lon, headingDeg = null, speed = null) => {
-    fetch(telemetryUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        x: lat,
-        y: lon,
-        heading: headingDeg,
-        speed,
-      }),
-    }).catch((e) => {
-      console.log("[Car] POST telemetry ERROR", String(e));
-    });
-  }, [telemetryUrl]);
+  const postTelemetry = useCallback(
+    (lat, lon, headingDeg = null, speed = null) => {
+      fetch(telemetryUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          x: lat,
+          y: lon,
+          heading: headingDeg,
+          speed,
+        }),
+      }).catch((e) => {
+        console.log("[Car] POST telemetry ERROR", String(e));
+      });
+    },
+    [telemetryUrl]
+  );
 
-  // ------------------------------------------------
-  // Placement du robot depuis l'état serveur
-  // ------------------------------------------------
-  // IMPORTANT :
-  // On ne veut PAS que chaque refresh serveur casse
-  // un trajet local déjà en cours.
-  //
-  // Donc :
-  // - au premier chargement : on place le robot
-  // - plus tard : on ne replace que s'il est à l'arrêt
-  // ------------------------------------------------
   useEffect(() => {
     if (!ref.current) return;
     if (!robotGeo) return;
     if (typeof toLocal !== "function") return;
 
-    // Si le robot roule déjà, on ignore la mise à jour serveur
-    // pour ne pas casser le mouvement local.
     if (movingRef.current) {
       console.log("[Car] robotGeo ignoré car mouvement en cours");
       return;
@@ -111,21 +81,17 @@ export function Car({
 
     const v = toLocal(robotGeo.lat, robotGeo.lon);
 
-    // Placement position
     ref.current.position.set(v.x, 0, -v.y);
 
-    // Réapplication orientation si dispo
     if (typeof robotGeo.heading === "number") {
       ref.current.rotation.y = THREE.MathUtils.degToRad(robotGeo.heading);
     }
 
-    // Reset des refs de mouvement
     pathRef.current = [];
     idxRef.current = 0;
     tRef.current = 0;
     movingRef.current = false;
 
-    // Reset télémétrie baseline
     lastTelemAtRef.current = 0;
     lastTelemPosRef.current = {
       x: ref.current.position.x,
@@ -142,16 +108,10 @@ export function Car({
     });
   }, [robotGeo, toLocal]);
 
-  // ------------------------------------------------
-  // Nouveau chemin à suivre
-  // ------------------------------------------------
-  // On part de la position courante réelle du robot,
-  // pas du premier point brut du chemin.
-  // ------------------------------------------------
   useEffect(() => {
     if (!ref.current) return;
 
-    if (!pathPoints || pathPoints.length < 2) {
+    if (!pathPoints || pathPoints.length < 1) {
       pathRef.current = [];
       idxRef.current = 0;
       tRef.current = 0;
@@ -159,16 +119,32 @@ export function Car({
       return;
     }
 
-    // Départ = position actuelle du robot dans la scène
     const start = {
       x: ref.current.position.x,
       z: ref.current.position.z,
     };
 
-    // On injecte la position actuelle au début du trajet
-    // pour éviter une téléportation si la position réelle
-    // n'est pas exactement sur le premier nœud.
-    const effectivePath = [start, ...pathPoints];
+    const rawPath = [start, ...pathPoints];
+    const effectivePath = [rawPath[0]];
+
+    for (let i = 1; i < rawPath.length; i++) {
+      const a = effectivePath[effectivePath.length - 1];
+      const b = rawPath[i];
+      const d = Math.hypot(b.x - a.x, b.z - a.z);
+
+      if (d > POINT_EPS) {
+        effectivePath.push(b);
+      }
+    }
+
+    if (effectivePath.length < 2) {
+      pathRef.current = [];
+      idxRef.current = 0;
+      tRef.current = 0;
+      movingRef.current = false;
+      console.log("[Car] trajet ignoré : points trop proches");
+      return;
+    }
 
     pathRef.current = effectivePath;
     idxRef.current = 0;
@@ -185,34 +161,47 @@ export function Car({
     console.log("[Car] nouveau trajet", {
       start,
       points: effectivePath.length,
+      effectivePath,
     });
   }, [pathPoints]);
 
-  // ------------------------------------------------
-  // Animation frame par frame
-  // ------------------------------------------------
   useFrame((state, delta) => {
     const pts = pathRef.current;
 
     if (!ref.current || !pts || pts.length < 2) return;
 
-    const idx = Math.min(idxRef.current, pts.length - 2);
+    let idx = Math.min(idxRef.current, pts.length - 2);
 
-    const p1 = new THREE.Vector3(pts[idx].x, 0, pts[idx].z);
-    const p2 = new THREE.Vector3(pts[idx + 1].x, 0, pts[idx + 1].z);
+    let p1 = new THREE.Vector3(pts[idx].x, 0, pts[idx].z);
+    let p2 = new THREE.Vector3(pts[idx + 1].x, 0, pts[idx + 1].z);
+
+    let dir = p2.clone().sub(p1);
+    let segLen = dir.length();
+
+    while (segLen < SEGMENT_EPS && idxRef.current < pts.length - 2) {
+      idxRef.current += 1;
+      tRef.current = 0;
+
+      idx = Math.min(idxRef.current, pts.length - 2);
+      p1 = new THREE.Vector3(pts[idx].x, 0, pts[idx].z);
+      p2 = new THREE.Vector3(pts[idx + 1].x, 0, pts[idx + 1].z);
+      dir = p2.clone().sub(p1);
+      segLen = dir.length();
+    }
+
+    if (segLen < SEGMENT_EPS) {
+      movingRef.current = false;
+      tRef.current = 1;
+      ref.current.position.copy(p2);
+      return;
+    }
+
     const p3 = pts[idx + 2]
       ? new THREE.Vector3(pts[idx + 2].x, 0, pts[idx + 2].z)
       : null;
 
-    const dir = p2.clone().sub(p1);
-    const dirNorm =
-      dir.length() > 1e-9
-        ? dir.clone().normalize()
-        : new THREE.Vector3(0, 0, 1);
+    const dirNorm = dir.clone().normalize();
 
-    // ------------------------------------------------
-    // Ralentissement léger dans les virages
-    // ------------------------------------------------
     let turnFactor = 1;
 
     if (p3) {
@@ -223,24 +212,17 @@ export function Car({
       }
     }
 
-    const adjustedSpeed = movingRef.current
-      ? baseSpeed * (0.5 + 0.5 * turnFactor)
-      : 0;
-
-    // ------------------------------------------------
-    // Avancement dans le segment courant
-    // ------------------------------------------------
     let t = tRef.current;
 
     if (movingRef.current) {
-      t = t + adjustedSpeed * (delta * 60);
+      const tStep = (worldSpeed * delta) / segLen;
+      t = t + tStep * (0.5 + 0.5 * turnFactor);
 
       if (t >= 1) {
         if (idxRef.current < pts.length - 2) {
           idxRef.current += 1;
           t = 0;
         } else {
-          // Fin du trajet
           movingRef.current = false;
           t = 1;
         }
@@ -249,15 +231,9 @@ export function Car({
       tRef.current = t;
     }
 
-    // ------------------------------------------------
-    // Position du robot
-    // ------------------------------------------------
     const pos = p1.clone().lerp(p2, Math.min(t, 1));
     ref.current.position.copy(pos);
 
-    // ------------------------------------------------
-    // Orientation du robot
-    // ------------------------------------------------
     const targetAngle = Math.atan2(dirNorm.x, dirNorm.z);
     const currentAngle = ref.current.rotation.y;
 
@@ -267,9 +243,6 @@ export function Car({
     const rotLerp = baseRotLerp * (0.6 + 0.4 * turnFactor);
     ref.current.rotation.y = currentAngle + deltaAngle * rotLerp;
 
-    // ------------------------------------------------
-    // Caméra embarquée
-    // ------------------------------------------------
     if (camMode > 0) {
       const dist = camMode === 1 ? 1.5 : 0.2;
       const height = camMode === 1 ? 0.7 : 0.1;
@@ -282,9 +255,6 @@ export function Car({
       state.camera.lookAt(pos);
     }
 
-    // ------------------------------------------------
-    // Télémétrie 1 fois par seconde
-    // ------------------------------------------------
     const now = performance.now();
 
     if (typeof toGeo === "function" && now - lastTelemAtRef.current >= 1000) {
